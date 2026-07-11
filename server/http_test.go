@@ -28,6 +28,9 @@ func TestAPIAuthIdempotencyAndContext(t *testing.T) {
 			req.Header.Set("Idempotency-Key", key)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Actor-ID", "test-user")
+		req.Header.Set("X-Actor-Type", "human")
+		req.Header.Set("X-Provenance-Source", "test")
 		rec := httptest.NewRecorder()
 		api.ServeHTTP(rec, req)
 		return rec

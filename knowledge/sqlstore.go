@@ -434,6 +434,21 @@ func (s *SQLStore) PutRelationship(ctx context.Context, v Relationship, e Event)
 	})
 	return v, err
 }
+func (s *SQLStore) GetRelationship(ctx context.Context, w, id string) (Relationship, error) {
+	row := s.db.QueryRowContext(ctx, s.q(`SELECT r.id,r.workspace_id,r.scope_id,r.version,r.from_type,r.from_id,r.predicate,r.to_type,r.to_id,r.confidence,r.state,r.metadata_json,r.provenance_json,r.created_at FROM relationships r JOIN relationship_current c ON c.workspace_id=r.workspace_id AND c.id=r.id AND c.version=r.version WHERE r.workspace_id=? AND r.id=?`), w, id)
+	var v Relationship
+	var md, p, c string
+	if err := row.Scan(&v.ID, &v.WorkspaceID, &v.ScopeID, &v.Version, &v.FromType, &v.FromID, &v.Predicate, &v.ToType, &v.ToID, &v.Confidence, &v.State, &md, &p, &c); err != nil {
+		if err == sql.ErrNoRows {
+			return v, NotFound("relationship not found")
+		}
+		return v, err
+	}
+	fromjs(md, &v.Metadata)
+	fromjs(p, &v.Provenance)
+	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, c)
+	return v, nil
+}
 func (s *SQLStore) ListRelationships(ctx context.Context, w, objectID string) ([]Relationship, error) {
 	rows, err := s.db.QueryContext(ctx, s.q(`SELECT r.id,r.workspace_id,r.scope_id,r.version,r.from_type,r.from_id,r.predicate,r.to_type,r.to_id,r.confidence,r.state,r.metadata_json,r.provenance_json,r.created_at FROM relationships r JOIN relationship_current c ON c.workspace_id=r.workspace_id AND c.id=r.id AND c.version=r.version WHERE r.workspace_id=? AND (r.from_id=? OR r.to_id=?)`), w, objectID, objectID)
 	if err != nil {

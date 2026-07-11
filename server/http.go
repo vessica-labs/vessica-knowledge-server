@@ -138,14 +138,11 @@ func (s *Server) opts(r *http.Request, workspace string) (knowledge.WriteOptions
 		return knowledge.WriteOptions{}, &knowledge.Error{Code: "forbidden_workspace", Message: "token is not scoped to this workspace", Status: 403}
 	}
 	o := knowledge.WriteOptions{WorkspaceID: workspace, IdempotencyKey: r.Header.Get("Idempotency-Key"), Actor: knowledge.Actor{ID: r.Header.Get("X-Actor-ID"), Type: r.Header.Get("X-Actor-Type")}, Provenance: knowledge.Provenance{Source: r.Header.Get("X-Provenance-Source"), SourceID: r.Header.Get("X-Provenance-ID")}}
-	if o.Actor.ID == "" {
-		o.Actor.ID = "api"
-	}
-	if o.Actor.Type == "" {
-		o.Actor.Type = "service"
+	if o.Actor.ID == "" || o.Actor.Type == "" {
+		return o, knowledge.Invalid("X-Actor-ID and X-Actor-Type headers required")
 	}
 	if o.Provenance.Source == "" {
-		o.Provenance.Source = "api"
+		return o, knowledge.Invalid("X-Provenance-Source header required")
 	}
 	if o.IdempotencyKey == "" {
 		return o, knowledge.Invalid("Idempotency-Key header required")

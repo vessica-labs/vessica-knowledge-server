@@ -18,6 +18,7 @@ type Store interface {
 	GetMemory(context.Context, string, string, int) (Memory, error)
 	SearchMemories(context.Context, string, []string, string, int) ([]Memory, error)
 	PutRelationship(context.Context, Relationship, Event) (Relationship, error)
+	GetRelationship(context.Context, string, string) (Relationship, error)
 	ListRelationships(context.Context, string, string) ([]Relationship, error)
 	GetEventByIdempotency(context.Context, string, string) (*Event, error)
 	ListEvents(context.Context, string) ([]Event, error)

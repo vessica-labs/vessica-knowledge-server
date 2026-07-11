@@ -120,6 +120,9 @@ func (s *Service) CreateEntity(ctx context.Context, o WriteOptions, v Entity) (E
 	v.WorkspaceID = o.WorkspaceID
 	v.Version = 1
 	v.State = defaultString(v.State, "active")
+	if !validObjectState(v.State) {
+		return v, Invalid("invalid entity state")
+	}
 	v.Provenance = o.Provenance
 	v.CreatedAt = time.Now().UTC()
 	v.UpdatedAt = v.CreatedAt
@@ -151,6 +154,9 @@ func (s *Service) VersionEntity(ctx context.Context, o WriteOptions, id string, 
 		v.DisplayName = cur.DisplayName
 	}
 	v.State = defaultString(v.State, cur.State)
+	if !validObjectState(v.State) {
+		return v, Invalid("invalid entity state")
+	}
 	v.Provenance = o.Provenance
 	v.CreatedAt = cur.CreatedAt
 	v.UpdatedAt = time.Now().UTC()
@@ -260,6 +266,9 @@ func (s *Service) CreateMemory(ctx context.Context, o WriteOptions, v Memory) (M
 	v.WorkspaceID = o.WorkspaceID
 	v.Version = 1
 	v.State = defaultString(v.State, "active")
+	if !validObjectState(v.State) {
+		return v, Invalid("invalid memory state")
+	}
 	v.ConfidenceSource = defaultString(v.ConfidenceSource, "agent_inferred")
 	if !confidenceSources[v.ConfidenceSource] || v.Importance < 0 || v.Importance > 1 || v.Confidence < 0 || v.Confidence > 1 {
 		return v, Invalid("invalid confidence source, importance, or confidence")
@@ -310,6 +319,9 @@ func (s *Service) VersionMemory(ctx context.Context, o WriteOptions, id string, 
 		v.Content = cur.Content
 	}
 	v.State = defaultString(v.State, cur.State)
+	if !validObjectState(v.State) {
+		return v, Invalid("invalid memory state")
+	}
 	v.ConfidenceSource = defaultString(v.ConfidenceSource, cur.ConfidenceSource)
 	if len(v.Content) > 1<<20 {
 		return v, Invalid("memory content exceeds 1 MiB")
@@ -338,6 +350,9 @@ func (s *Service) VersionMemory(ctx context.Context, o WriteOptions, id string, 
 	return got, err
 }
 func (s *Service) SetMemoryState(ctx context.Context, o WriteOptions, id, state string) (Memory, error) {
+	if !validObjectState(state) {
+		return Memory{}, Invalid("invalid memory state")
+	}
 	cur, err := s.Store.GetMemory(ctx, o.WorkspaceID, id, 0)
 	if err != nil {
 		return cur, err
@@ -352,12 +367,7 @@ func (s *Service) CreateRelationship(ctx context.Context, o WriteOptions, v Rela
 		return v, err
 	}
 	if old != nil {
-		rels, _ := s.Store.ListRelationships(ctx, o.WorkspaceID, old.AggregateID)
-		for _, r := range rels {
-			if r.ID == old.AggregateID {
-				return r, nil
-			}
-		}
+		return s.Store.GetRelationship(ctx, o.WorkspaceID, old.AggregateID)
 	}
 	if v.ScopeID == "" || v.FromType == "" || v.FromID == "" || v.Predicate == "" || v.ToType == "" || v.ToID == "" {
 		return v, Invalid("relationship endpoints, predicate, and scope required")
@@ -368,6 +378,9 @@ func (s *Service) CreateRelationship(ctx context.Context, o WriteOptions, v Rela
 	v.WorkspaceID = o.WorkspaceID
 	v.Version = 1
 	v.State = defaultString(v.State, "active")
+	if !validObjectState(v.State) {
+		return v, Invalid("invalid relationship state")
+	}
 	if v.Confidence == 0 {
 		v.Confidence = 1
 	}
@@ -403,6 +416,23 @@ func (s *Service) Context(ctx context.Context, r ContextRequest) (ContextRespons
 	if err != nil {
 		return ContextResponse{}, err
 	}
+	entitySet := map[string]bool{}
+	for _, entity := range entities {
+		entitySet[entity.ID] = true
+	}
+	for _, id := range r.EntityIDs {
+		entitySet[id] = true
+		if !containsEntity(entities, id) {
+			if entity, getErr := s.Store.GetEntity(ctx, r.WorkspaceID, id); getErr == nil {
+				entities = append(entities, entity)
+			}
+		}
+	}
+	if len(entitySet) > 0 {
+		sort.SliceStable(arts, func(i, j int) bool {
+			return s.relatedToAny(ctx, r.WorkspaceID, arts[i].ID, entitySet) && !s.relatedToAny(ctx, r.WorkspaceID, arts[j].ID, entitySet)
+		})
+	}
 	semantic := map[string]float64{}
 	mode := "lexical"
 	model := ""
@@ -423,8 +453,12 @@ func (s *Service) Context(ctx context.Context, r ContextRequest) (ContextRespons
 		scope := scopeScore(r.ScopeIDs, m.ScopeID)
 		recency := recencyScore(m.UpdatedAt)
 		sem := semantic[m.ID]
-		score := .35*lex + .2*scope + .15*m.Importance + .15*m.Confidence + .1*recency + .05*sem
-		ranked = append(ranked, RankedMemory{m, score, map[string]float64{"lexical": lex, "scope": scope, "importance": m.Importance, "confidence": m.Confidence, "recency": recency, "semantic": sem}})
+		entity := 0.0
+		if s.relatedToAny(ctx, r.WorkspaceID, m.ID, entitySet) {
+			entity = 1
+		}
+		score := .3*lex + .18*scope + .14*m.Importance + .14*m.Confidence + .09*recency + .05*sem + .1*entity
+		ranked = append(ranked, RankedMemory{m, score, map[string]float64{"lexical": lex, "scope": scope, "entity": entity, "importance": m.Importance, "confidence": m.Confidence, "recency": recency, "semantic": sem}})
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].Score > ranked[j].Score })
 	resp := ContextResponse{Schema: APIVersion, RetrievalMode: mode, Artifacts: []Artifact{}, Instructions: []RankedMemory{}, Entities: entities, Decisions: []RankedMemory{}, Facts: []RankedMemory{}, Episodes: []RankedMemory{}, IndexFresh: true, EmbeddingModel: model}
@@ -565,10 +599,40 @@ func recencyScore(t time.Time) float64 {
 	}
 	return 1 / (1 + days/30)
 }
+func containsEntity(v []Entity, id string) bool {
+	for _, x := range v {
+		if x.ID == id {
+			return true
+		}
+	}
+	return false
+}
+func (s *Service) relatedToAny(ctx context.Context, workspace, objectID string, ids map[string]bool) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	rels, err := s.Store.ListRelationships(ctx, workspace, objectID)
+	if err != nil {
+		return false
+	}
+	for _, rel := range rels {
+		if ids[rel.FromID] || ids[rel.ToID] {
+			return true
+		}
+	}
+	return false
+}
 
 func validArtifactStatus(v string) bool {
 	switch v {
 	case "draft", "active", "superseded", "archived":
+		return true
+	}
+	return false
+}
+func validObjectState(v string) bool {
+	switch v {
+	case "active", "superseded", "archived", "tombstoned":
 		return true
 	}
 	return false

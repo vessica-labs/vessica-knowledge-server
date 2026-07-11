@@ -74,9 +74,12 @@ func runContract(t *testing.T, open func(*testing.T) Store) {
 	if err != nil || mem.EmbeddingState != "not_configured" {
 		t.Fatalf("memory=%#v err=%v", mem, err)
 	}
-	_, err = svc.CreateRelationship(ctx, opt("relationship"), Relationship{ScopeID: scope.ID, FromType: "memory", FromID: mem.ID, Predicate: "derived_from", ToType: "artifact", ToID: art.ID})
+	rel, err := svc.CreateRelationship(ctx, opt("relationship"), Relationship{ScopeID: scope.ID, FromType: "memory", FromID: mem.ID, Predicate: "derived_from", ToType: "artifact", ToID: art.ID})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if replay, err := svc.CreateRelationship(ctx, opt("relationship"), Relationship{ScopeID: scope.ID, FromType: "memory", FromID: "different", Predicate: "about", ToType: "artifact", ToID: art.ID}); err != nil || replay.ID != rel.ID {
+		t.Fatalf("relationship replay=%#v err=%v", replay, err)
 	}
 	ctxResult, err := svc.Context(ctx, ContextRequest{WorkspaceID: w, Query: "SQLite storage", ScopeIDs: []string{scope.ID}, ArtifactSelectors: []ArtifactSelector{{Type: "prd", Status: "active"}}, TokenBudget: 1000})
 	if err != nil || ctxResult.RetrievalMode != "lexical" || len(ctxResult.Artifacts) != 1 || len(ctxResult.Decisions) != 1 {
