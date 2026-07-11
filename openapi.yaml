@@ -21,9 +21,9 @@ paths:
   /v1/memories/{id}:archive: {post: {operationId: archiveMemory, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Archived}}}}
   /v1/relationships: {post: {operationId: createRelationship, responses: {'201': {description: Created}}}}
   /v1/workflow-events: {post: {operationId: ingestWorkflowEvent, responses: {'201': {description: Episode}}}}
-  /v1/exports: {post: {operationId: exportSnapshot, responses: {'200': {description: Snapshot}}}}
-  /v1/imports: {post: {operationId: importSnapshot, responses: {'201': {description: Import status}}}}
-  /v1/imports/{id}: {get: {operationId: getImport, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Import status}}}}
+  /v1/exports: {post: {operationId: exportSnapshot, security: [{exportBearer: []}], responses: {'200': {description: Snapshot}}}}
+  /v1/imports: {post: {operationId: importSnapshot, security: [{exportBearer: []}], responses: {'201': {description: Import status}}}}
+  /v1/imports/{id}: {get: {operationId: getImport, security: [{exportBearer: []}], parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Import status}}}}
 components:
-  securitySchemes: {bearerAuth: {type: http, scheme: bearer}}
+  securitySchemes: {bearerAuth: {type: http, scheme: bearer}, exportBearer: {type: http, scheme: bearer}}
   parameters: {id: {name: id, in: path, required: true, schema: {type: string}}}

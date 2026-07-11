@@ -18,7 +18,7 @@ func TestAPIAuthIdempotencyAndContext(t *testing.T) {
 	}
 	defer store.Close()
 	svc := knowledge.NewService(store, nil)
-	api := (&Server{Service: svc, Token: "secret", DefaultWorkspace: "kwsp_test"}).Handler()
+	api := (&Server{Service: svc, Token: "secret", ExportToken: "admin-secret", DefaultWorkspace: "kwsp_test"}).Handler()
 	send := func(method, path, key, body string, auth bool) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 		if auth {
@@ -73,5 +73,15 @@ func TestAPIAuthIdempotencyAndContext(t *testing.T) {
 	}
 	if err := store.Ping(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if got := send("POST", "/v1/exports", "", `{"workspace_id":"kwsp_test"}`, true); got.Code != 401 {
+		t.Fatalf("ordinary token exported=%d %s", got.Code, got.Body.String())
+	}
+	req := httptest.NewRequest("POST", "/v1/exports", bytes.NewBufferString(`{"workspace_id":"kwsp_test"}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("admin export=%d %s", rec.Code, rec.Body.String())
 	}
 }

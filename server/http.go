@@ -17,6 +17,7 @@ import (
 type Server struct {
 	Service          *knowledge.Service
 	Token            string
+	ExportToken      string
 	DefaultWorkspace string
 	rateMu           sync.Mutex
 	rate             map[string]rateWindow
@@ -57,9 +58,9 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/memories/{id}/archive", s.auth(s.memoryState("archived")))
 	m.HandleFunc("POST /v1/relationships", s.auth(s.createRelationship))
 	m.HandleFunc("POST /v1/workflow-events", s.auth(s.workflow))
-	m.HandleFunc("POST /v1/exports", s.auth(s.export))
-	m.HandleFunc("POST /v1/imports", s.auth(s.importSnapshot))
-	m.HandleFunc("GET /v1/imports/{id}", s.auth(s.importStatus))
+	m.HandleFunc("POST /v1/exports", s.authWith(s.exportCredential(), s.export))
+	m.HandleFunc("POST /v1/imports", s.authWith(s.exportCredential(), s.importSnapshot))
+	m.HandleFunc("GET /v1/imports/{id}", s.authWith(s.exportCredential(), s.importStatus))
 	// Go's ServeMux does not support a static suffix after a path wildcard.
 	// Preserve the public colon-action API by rewriting it to internal routes.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,8 +92,17 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]any{"ok": true, "api": "ready", "database": "ready", "migrations": "ready", "embedding_worker": embedding, "index": index})
 }
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+	return s.authWith(s.Token, next)
+}
+func (s *Server) exportCredential() string {
+	if s.ExportToken != "" {
+		return s.ExportToken
+	}
+	return s.Token
+}
+func (s *Server) authWith(required string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.Token != "" && !token(r.Header.Get("Authorization"), s.Token) {
+		if required != "" && !token(r.Header.Get("Authorization"), required) {
 			failure(w, &knowledge.Error{Code: "unauthorized", Message: "invalid bearer token", Status: 401})
 			return
 		}

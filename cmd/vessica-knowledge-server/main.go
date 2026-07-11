@@ -43,12 +43,15 @@ func main() {
 	if hosted && strings.TrimSpace(os.Getenv("KNOWLEDGE_API_TOKEN")) == "" {
 		log.Fatal("KNOWLEDGE_API_TOKEN is required in hosted mode")
 	}
+	if hosted && strings.TrimSpace(os.Getenv("KNOWLEDGE_EXPORT_TOKEN")) == "" {
+		log.Fatal("KNOWLEDGE_EXPORT_TOKEN is required in hosted mode")
+	}
 	if hosted && strings.TrimSpace(os.Getenv("KNOWLEDGE_WORKSPACE_ID")) == "" {
 		log.Fatal("KNOWLEDGE_WORKSPACE_ID is required in hosted mode")
 	}
 	svc := knowledge.NewService(store, embedder)
 	svc.StartEmbeddingWorker(ctx)
-	srv := &http.Server{Addr: ":" + defaultValue(os.Getenv("PORT"), "8080"), Handler: (&server.Server{Service: svc, Token: os.Getenv("KNOWLEDGE_API_TOKEN"), DefaultWorkspace: os.Getenv("KNOWLEDGE_WORKSPACE_ID")}).Handler(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + defaultValue(os.Getenv("PORT"), "8080"), Handler: (&server.Server{Service: svc, Token: os.Getenv("KNOWLEDGE_API_TOKEN"), ExportToken: os.Getenv("KNOWLEDGE_EXPORT_TOKEN"), DefaultWorkspace: os.Getenv("KNOWLEDGE_WORKSPACE_ID")}).Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)

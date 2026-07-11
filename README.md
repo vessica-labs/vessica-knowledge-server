@@ -14,6 +14,7 @@ Environment variables:
 - `DATABASE_URL`: Postgres connection string; omit for SQLite.
 - `KNOWLEDGE_SQLITE_PATH`: SQLite path when `DATABASE_URL` is absent.
 - `KNOWLEDGE_API_TOKEN`: required bearer token for hosted HTTP requests.
+- `KNOWLEDGE_EXPORT_TOKEN`: separately scoped token for snapshot export/import.
 - `KNOWLEDGE_WORKSPACE_ID`: default workspace.
 - `EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`: hosted embedding provider.
 - `PORT`: listen port, default `8080`.
