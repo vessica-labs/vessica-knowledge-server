@@ -81,10 +81,14 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	embedding := "not_configured"
+	index := "ready"
 	if s.Service.Embedder != nil {
 		embedding = "ready"
+		if backlog, _ := s.Service.Store.EmbeddingBacklog(r.Context(), s.DefaultWorkspace); backlog > 0 {
+			index = "catching_up"
+		}
 	}
-	write(w, 200, map[string]any{"ok": true, "api": "ready", "database": "ready", "migrations": "ready", "embedding_worker": embedding, "index": "ready"})
+	write(w, 200, map[string]any{"ok": true, "api": "ready", "database": "ready", "migrations": "ready", "embedding_worker": embedding, "index": index})
 }
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +126,7 @@ func token(h, want string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20))
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<20))
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
 		failure(w, &knowledge.Error{Code: "invalid_json", Message: err.Error(), Status: 400})

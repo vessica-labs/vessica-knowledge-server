@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS memory_current(workspace_id TEXT NOT NULL, id TEXT NO
 CREATE TABLE IF NOT EXISTS relationships(id TEXT NOT NULL, workspace_id TEXT NOT NULL, scope_id TEXT NOT NULL, version INTEGER NOT NULL, from_type TEXT NOT NULL, from_id TEXT NOT NULL, predicate TEXT NOT NULL, to_type TEXT NOT NULL, to_id TEXT NOT NULL, confidence REAL NOT NULL, state TEXT NOT NULL, metadata_json TEXT NOT NULL, provenance_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(workspace_id,id,version));
 CREATE TABLE IF NOT EXISTS relationship_current(workspace_id TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(workspace_id,id));
 CREATE TABLE IF NOT EXISTS embeddings(workspace_id TEXT NOT NULL, object_type TEXT NOT NULL, object_id TEXT NOT NULL, version INTEGER NOT NULL, vector_json TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(workspace_id,object_type,object_id,version));
+CREATE TABLE IF NOT EXISTS embedding_jobs(workspace_id TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, available_at TEXT NOT NULL, last_error TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(workspace_id,memory_id,version));
 CREATE INDEX IF NOT EXISTS idx_events_workspace ON knowledge_events(workspace_id,occurred_at);
 CREATE INDEX IF NOT EXISTS idx_artifacts_scope ON artifacts(workspace_id,scope_id,type,status);
 CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(workspace_id,scope_id,type,state);
@@ -340,13 +341,65 @@ func (s *SQLStore) PutMemory(ctx context.Context, v Memory, e Event) (Memory, er
 		if x != nil {
 			return x
 		}
-		return upsertCurrent(ctx, tx, s.dialect, "memory_current", v.WorkspaceID, v.ID, v.Version)
+		if x = upsertCurrent(ctx, tx, s.dialect, "memory_current", v.WorkspaceID, v.ID, v.Version); x != nil {
+			return x
+		}
+		if v.EmbeddingState == "pending" {
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			_, x = tx.ExecContext(ctx, s.q(`INSERT INTO embedding_jobs(workspace_id,memory_id,version,text,status,attempts,available_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,memory_id,version) DO UPDATE SET text=excluded.text,status=CASE WHEN embedding_jobs.status='completed' THEN embedding_jobs.status ELSE 'pending' END,available_at=excluded.available_at,updated_at=excluded.updated_at`), v.WorkspaceID, v.ID, v.Version, v.Title+"\n"+v.Content, "pending", 0, now, now)
+		}
+		return x
 	})
 	if err == nil && s.dialect == "sqlite" {
 		_, _ = s.db.ExecContext(ctx, `DELETE FROM memory_fts WHERE workspace_id=? AND id=?`, v.WorkspaceID, v.ID)
 		_, _ = s.db.ExecContext(ctx, `INSERT INTO memory_fts(workspace_id,id,title,content) VALUES(?,?,?,?)`, v.WorkspaceID, v.ID, v.Title, v.Content)
 	}
 	return v, err
+}
+
+func (s *SQLStore) EnqueueEmbedding(ctx context.Context, w, id string, version int, text string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO embedding_jobs(workspace_id,memory_id,version,text,status,attempts,available_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,memory_id,version) DO UPDATE SET text=excluded.text,status=CASE WHEN embedding_jobs.status='completed' THEN embedding_jobs.status ELSE 'pending' END,available_at=excluded.available_at,updated_at=excluded.updated_at`), w, id, version, text, "pending", 0, now, now)
+	return err
+}
+func (s *SQLStore) ClaimEmbedding(ctx context.Context) (*EmbeddingJob, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	row := s.db.QueryRowContext(ctx, s.q(`SELECT workspace_id,memory_id,version,text,attempts FROM embedding_jobs WHERE status IN ('pending','retry') AND available_at<=? ORDER BY updated_at LIMIT 1`), now)
+	var j EmbeddingJob
+	if err := row.Scan(&j.WorkspaceID, &j.MemoryID, &j.Version, &j.Text, &j.Attempts); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	result, err := s.db.ExecContext(ctx, s.q(`UPDATE embedding_jobs SET status='running',attempts=attempts+1,updated_at=? WHERE workspace_id=? AND memory_id=? AND version=? AND status IN ('pending','retry')`), now, j.WorkspaceID, j.MemoryID, j.Version)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return nil, nil
+	}
+	j.Attempts++
+	return &j, nil
+}
+func (s *SQLStore) FinishEmbedding(ctx context.Context, j EmbeddingJob, failure error) error {
+	now := time.Now().UTC()
+	if failure == nil {
+		_, err := s.db.ExecContext(ctx, s.q(`UPDATE embedding_jobs SET status='completed',last_error=NULL,updated_at=? WHERE workspace_id=? AND memory_id=? AND version=?`), now.Format(time.RFC3339Nano), j.WorkspaceID, j.MemoryID, j.Version)
+		return err
+	}
+	status := "retry"
+	if j.Attempts >= 5 {
+		status = "failed"
+	}
+	available := now.Add(time.Duration(j.Attempts*j.Attempts) * time.Second).Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, s.q(`UPDATE embedding_jobs SET status=?,last_error=?,available_at=?,updated_at=? WHERE workspace_id=? AND memory_id=? AND version=?`), status, failure.Error(), available, now.Format(time.RFC3339Nano), j.WorkspaceID, j.MemoryID, j.Version)
+	return err
+}
+func (s *SQLStore) EmbeddingBacklog(ctx context.Context, workspace string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM embedding_jobs WHERE workspace_id=? AND status IN ('pending','retry','running')`), workspace).Scan(&n)
+	return n, err
 }
 func (s *SQLStore) GetMemory(ctx context.Context, w, id string, version int) (Memory, error) {
 	args := []any{w, id}

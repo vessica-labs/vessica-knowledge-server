@@ -28,4 +28,8 @@ type Store interface {
 	PutEmbedding(context.Context, string, string, string, int, []float32, string, string) error
 	SetEmbeddingState(context.Context, string, string, int, string) error
 	SearchEmbeddings(context.Context, string, []string, []float32, int) (map[string]float64, error)
+	EnqueueEmbedding(context.Context, string, string, int, string) error
+	ClaimEmbedding(context.Context) (*EmbeddingJob, error)
+	FinishEmbedding(context.Context, EmbeddingJob, error) error
+	EmbeddingBacklog(context.Context, string) (int, error)
 }

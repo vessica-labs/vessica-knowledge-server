@@ -180,3 +180,11 @@ type WriteOptions struct {
 	Actor          Actor      `json:"actor"`
 	Provenance     Provenance `json:"provenance"`
 }
+
+type EmbeddingJob struct {
+	WorkspaceID string
+	MemoryID    string
+	Version     int
+	Text        string
+	Attempts    int
+}

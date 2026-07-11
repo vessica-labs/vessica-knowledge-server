@@ -19,17 +19,11 @@ type Embedder interface {
 type Service struct {
 	Store    Store
 	Embedder Embedder
-	queue    chan embeddingJob
 	once     sync.Once
-}
-type embeddingJob struct {
-	WorkspaceID, MemoryID string
-	Version               int
-	Text                  string
 }
 
 func NewService(store Store, embedder Embedder) *Service {
-	return &Service{Store: store, Embedder: embedder, queue: make(chan embeddingJob, 1024)}
+	return &Service{Store: store, Embedder: embedder}
 }
 func (s *Service) StartEmbeddingWorker(ctx context.Context) {
 	if s.Embedder == nil {
@@ -37,18 +31,28 @@ func (s *Service) StartEmbeddingWorker(ctx context.Context) {
 	}
 	s.once.Do(func() {
 		go func() {
+			ticker := time.NewTicker(250 * time.Millisecond)
+			defer ticker.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case j := <-s.queue:
+				case <-ticker.C:
+					j, claimErr := s.Store.ClaimEmbedding(ctx)
+					if claimErr != nil || j == nil {
+						continue
+					}
 					v, err := s.Embedder.Embed(ctx, j.Text)
 					if err != nil {
-						_ = s.Store.SetEmbeddingState(context.Background(), j.WorkspaceID, j.MemoryID, j.Version, "failed")
+						_ = s.Store.FinishEmbedding(context.Background(), *j, err)
+						if j.Attempts >= 5 {
+							_ = s.Store.SetEmbeddingState(context.Background(), j.WorkspaceID, j.MemoryID, j.Version, "failed")
+						}
 						continue
 					}
 					_ = s.Store.PutEmbedding(context.Background(), j.WorkspaceID, "memory", j.MemoryID, j.Version, v, s.Embedder.Provider(), s.Embedder.Model())
 					_ = s.Store.SetEmbeddingState(context.Background(), j.WorkspaceID, j.MemoryID, j.Version, "ready")
+					_ = s.Store.FinishEmbedding(context.Background(), *j, nil)
 				}
 			}
 		}()
@@ -289,9 +293,6 @@ func (s *Service) CreateMemory(ctx context.Context, o WriteOptions, v Memory) (M
 	v.UpdatedAt = v.CreatedAt
 	normalizeMaps(&v.Metadata)
 	got, err := s.Store.PutMemory(ctx, v, event(o, "memory", v.ID, "memory.created", v.Version, map[string]any{"memory": v}))
-	if err == nil && s.Embedder != nil {
-		s.queue <- embeddingJob{v.WorkspaceID, v.ID, v.Version, v.Title + "\n" + v.Content}
-	}
 	return got, err
 }
 func (s *Service) VersionMemory(ctx context.Context, o WriteOptions, id string, v Memory) (Memory, error) {
@@ -344,9 +345,6 @@ func (s *Service) VersionMemory(ctx context.Context, o WriteOptions, id string, 
 	v.CreatedAt = cur.CreatedAt
 	v.UpdatedAt = time.Now().UTC()
 	got, err := s.Store.PutMemory(ctx, v, event(o, "memory", id, "memory.versioned", v.Version, map[string]any{"memory": v}))
-	if err == nil && s.Embedder != nil {
-		s.queue <- embeddingJob{v.WorkspaceID, v.ID, v.Version, v.Title + "\n" + v.Content}
-	}
 	return got, err
 }
 func (s *Service) SetMemoryState(ctx context.Context, o WriteOptions, id, state string) (Memory, error) {
@@ -461,7 +459,8 @@ func (s *Service) Context(ctx context.Context, r ContextRequest) (ContextRespons
 		ranked = append(ranked, RankedMemory{m, score, map[string]float64{"lexical": lex, "scope": scope, "entity": entity, "importance": m.Importance, "confidence": m.Confidence, "recency": recency, "semantic": sem}})
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].Score > ranked[j].Score })
-	resp := ContextResponse{Schema: APIVersion, RetrievalMode: mode, Artifacts: []Artifact{}, Instructions: []RankedMemory{}, Entities: entities, Decisions: []RankedMemory{}, Facts: []RankedMemory{}, Episodes: []RankedMemory{}, IndexFresh: true, EmbeddingModel: model}
+	backlog, _ := s.Store.EmbeddingBacklog(ctx, r.WorkspaceID)
+	resp := ContextResponse{Schema: APIVersion, RetrievalMode: mode, Artifacts: []Artifact{}, Instructions: []RankedMemory{}, Entities: entities, Decisions: []RankedMemory{}, Facts: []RankedMemory{}, Episodes: []RankedMemory{}, IndexFresh: backlog == 0, EmbeddingModel: model}
 	used := 0
 	instructionKeys := map[string]bool{}
 	for _, a := range arts {
@@ -536,7 +535,9 @@ func (s *Service) ImportSnapshot(ctx context.Context, snap Snapshot) error {
 		if err := s.Store.SetEmbeddingState(ctx, m.WorkspaceID, m.ID, m.Version, "pending"); err != nil {
 			return err
 		}
-		s.queue <- embeddingJob{m.WorkspaceID, m.ID, m.Version, m.Title + "\n" + m.Content}
+		if err := s.Store.EnqueueEmbedding(ctx, m.WorkspaceID, m.ID, m.Version, m.Title+"\n"+m.Content); err != nil {
+			return err
+		}
 	}
 	return nil
 }
