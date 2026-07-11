@@ -437,6 +437,18 @@ func (s *Service) Context(ctx context.Context, r ContextRequest) (ContextRespons
 	if s.Embedder != nil {
 		if qv, e := s.Embedder.Embed(ctx, r.Query); e == nil {
 			semantic, _ = s.Store.SearchEmbeddings(ctx, r.WorkspaceID, r.ScopeIDs, qv, 200)
+			seen := map[string]bool{}
+			for _, m := range mems {
+				seen[m.ID] = true
+			}
+			for id := range semantic {
+				if seen[id] {
+					continue
+				}
+				if m, getErr := s.Store.GetMemory(ctx, r.WorkspaceID, id, 0); getErr == nil && includes(r.ScopeIDs, m.ScopeID) && m.State != "archived" && m.State != "tombstoned" {
+					mems = append(mems, m)
+				}
+			}
 			mode = "semantic_hybrid"
 			model = s.Embedder.Model()
 		}
@@ -460,7 +472,7 @@ func (s *Service) Context(ctx context.Context, r ContextRequest) (ContextRespons
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].Score > ranked[j].Score })
 	backlog, _ := s.Store.EmbeddingBacklog(ctx, r.WorkspaceID)
-	resp := ContextResponse{Schema: APIVersion, RetrievalMode: mode, Artifacts: []Artifact{}, Instructions: []RankedMemory{}, Entities: entities, Decisions: []RankedMemory{}, Facts: []RankedMemory{}, Episodes: []RankedMemory{}, IndexFresh: backlog == 0, EmbeddingModel: model}
+	resp := ContextResponse{Schema: APIVersion, Ranking: rankingMechanism(), RetrievalMode: mode, Artifacts: []Artifact{}, ArtifactExplanations: []ArtifactExplanation{}, Instructions: []RankedMemory{}, Entities: entities, Decisions: []RankedMemory{}, Facts: []RankedMemory{}, Episodes: []RankedMemory{}, IndexFresh: backlog == 0, EmbeddingModel: model}
 	used := 0
 	instructionKeys := map[string]bool{}
 	for _, a := range arts {
@@ -470,6 +482,7 @@ func (s *Service) Context(ctx context.Context, r ContextRequest) (ContextRespons
 			continue
 		}
 		resp.Artifacts = append(resp.Artifacts, a)
+		resp.ArtifactExplanations = append(resp.ArtifactExplanations, ArtifactExplanation{ArtifactID: a.ID, Reasons: artifactReasons(a, r, entitySet, s.relatedToAny(ctx, r.WorkspaceID, a.ID, entitySet))})
 		used += cost
 	}
 	for _, m := range ranked {
@@ -630,6 +643,39 @@ func validArtifactStatus(v string) bool {
 		return true
 	}
 	return false
+}
+func rankingMechanism() RankingMechanism {
+	return RankingMechanism{
+		Version:             "v1",
+		MemoryWeights:       map[string]float64{"lexical": .30, "scope": .18, "importance": .14, "confidence": .14, "entity": .10, "recency": .09, "semantic": .05},
+		ArtifactPolicy:      []string{"explicit identity and version", "active lifecycle and type selectors", "applicable scope", "entity relationship", "stable storage order"},
+		ContextOrder:        []string{"active_artifacts", "instructions", "entities", "decisions", "facts", "episodes"},
+		InstructionOverride: "A more-specific applicable instruction replaces a broader instruction only when both declare the same metadata.semantic_key.",
+	}
+}
+func artifactReasons(a Artifact, r ContextRequest, entities map[string]bool, related bool) []string {
+	reasons := []string{"deterministic_artifact_selection"}
+	for _, selector := range r.ArtifactSelectors {
+		if selector.ID == a.ID {
+			reasons = append(reasons, "explicit_id")
+		}
+		if selector.Version == a.Version && selector.Version > 0 {
+			reasons = append(reasons, "explicit_version")
+		}
+		if selector.Type == a.Type && selector.Type != "" {
+			reasons = append(reasons, "type:"+a.Type)
+		}
+		if selector.Status == a.Status && selector.Status != "" {
+			reasons = append(reasons, "status:"+a.Status)
+		}
+	}
+	if includes(r.ScopeIDs, a.ScopeID) {
+		reasons = append(reasons, "applicable_scope")
+	}
+	if len(entities) > 0 && related {
+		reasons = append(reasons, "entity_relationship")
+	}
+	return reasons
 }
 func validObjectState(v string) bool {
 	switch v {

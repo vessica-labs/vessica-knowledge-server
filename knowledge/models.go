@@ -133,19 +133,32 @@ type RankedMemory struct {
 	Score       float64            `json:"score"`
 	Explanation map[string]float64 `json:"explanation"`
 }
+type RankingMechanism struct {
+	Version             string             `json:"version"`
+	MemoryWeights       map[string]float64 `json:"memory_weights"`
+	ArtifactPolicy      []string           `json:"artifact_policy"`
+	ContextOrder        []string           `json:"context_order"`
+	InstructionOverride string             `json:"instruction_override"`
+}
+type ArtifactExplanation struct {
+	ArtifactID string   `json:"artifact_id"`
+	Reasons    []string `json:"reasons"`
+}
 type ContextResponse struct {
-	Schema         string         `json:"schema"`
-	RetrievalMode  string         `json:"retrieval_mode"`
-	Artifacts      []Artifact     `json:"artifacts"`
-	Instructions   []RankedMemory `json:"instructions"`
-	Entities       []Entity       `json:"entities"`
-	Decisions      []RankedMemory `json:"decisions"`
-	Facts          []RankedMemory `json:"facts"`
-	Episodes       []RankedMemory `json:"episodes"`
-	TokenEstimate  int            `json:"token_estimate"`
-	Omissions      []string       `json:"omissions,omitempty"`
-	IndexFresh     bool           `json:"index_fresh"`
-	EmbeddingModel string         `json:"embedding_model,omitempty"`
+	Schema               string                `json:"schema"`
+	Ranking              RankingMechanism      `json:"ranking"`
+	RetrievalMode        string                `json:"retrieval_mode"`
+	Artifacts            []Artifact            `json:"artifacts"`
+	ArtifactExplanations []ArtifactExplanation `json:"artifact_explanations"`
+	Instructions         []RankedMemory        `json:"instructions"`
+	Entities             []Entity              `json:"entities"`
+	Decisions            []RankedMemory        `json:"decisions"`
+	Facts                []RankedMemory        `json:"facts"`
+	Episodes             []RankedMemory        `json:"episodes"`
+	TokenEstimate        int                   `json:"token_estimate"`
+	Omissions            []string              `json:"omissions,omitempty"`
+	IndexFresh           bool                  `json:"index_fresh"`
+	EmbeddingModel       string                `json:"embedding_model,omitempty"`
 }
 
 type WorkflowEvent struct {

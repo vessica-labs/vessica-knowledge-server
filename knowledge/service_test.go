@@ -137,6 +137,11 @@ func TestEmbeddingWorkerAndHybridContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	o.IdempotencyKey = "semantic-only"
+	semanticOnly, err := svc.CreateMemory(ctx, o, Memory{ScopeID: scope.ID, Type: "fact", Content: "bananas grow in warm climates"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		got, _ := store.GetMemory(ctx, w, m.ID, 0)
@@ -145,9 +150,29 @@ func TestEmbeddingWorkerAndHybridContext(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := store.GetMemory(ctx, w, semanticOnly.ID, 0)
+		if got.EmbeddingState == "ready" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	result, err := svc.Context(ctx, ContextRequest{WorkspaceID: w, Query: "OAuth", ScopeIDs: []string{scope.ID}})
 	if err != nil || result.RetrievalMode != "semantic_hybrid" || result.EmbeddingModel != "fake-v1" {
 		t.Fatalf("context=%#v err=%v", result, err)
+	}
+	if result.Ranking.Version != "v1" || result.Ranking.MemoryWeights["semantic"] == 0 {
+		t.Fatalf("ranking=%#v", result.Ranking)
+	}
+	foundSemanticOnly := false
+	for _, fact := range result.Facts {
+		if fact.Memory.ID == semanticOnly.ID {
+			foundSemanticOnly = true
+		}
+	}
+	if !foundSemanticOnly {
+		t.Fatalf("semantic-only memory missing: %#v", result.Facts)
 	}
 }
 

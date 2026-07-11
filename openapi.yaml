@@ -1,29 +1,504 @@
 openapi: 3.1.0
-info: {title: Vessica Knowledge API, version: 1.0.0}
-security: [{bearerAuth: []}]
+info:
+  title: Vessica Knowledge API
+  version: 1.1.0
+  description: |
+    Workspace-scoped API for authoritative artifacts, durable memories, entities,
+    relationships, ranked context, workflow episodes, and verified snapshots.
+    All responses use the `vessica.knowledge/v1` envelope. All writes require
+    `Idempotency-Key`, `X-Actor-ID`, `X-Actor-Type`, and
+    `X-Provenance-Source` headers.
+  license: {name: Apache-2.0, identifier: Apache-2.0}
+servers:
+  - url: https://{host}
+    variables:
+      host: {default: knowledge.example.com}
+security:
+  - bearerAuth: []
+tags:
+  - {name: Context, description: Assemble bounded ranked agent context}
+  - {name: Entities, description: Resolve identity and scope hierarchy}
+  - {name: Artifacts, description: Manage authoritative immutable work products}
+  - {name: Memories, description: Manage retrieval-oriented durable understanding}
+  - {name: Relationships, description: Create immutable knowledge assertions}
+  - {name: Workflow, description: Convert meaningful work events into episodes}
+  - {name: Migration, description: Export and import verified workspace snapshots}
 paths:
-  /v1/context: {post: {operationId: assembleContext, responses: {'200': {description: Ranked context}}}}
-  /v1/entities: {post: {operationId: createEntity, responses: {'201': {description: Created}}}}
-  /v1/entities/{id}: {get: {operationId: getEntity, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Entity}}}}
-  /v1/entities:resolve: {get: {operationId: resolveEntities, responses: {'200': {description: Matches}}}}
+  /healthz:
+    get:
+      security: []
+      summary: Check process health
+      operationId: health
+      responses:
+        '200': {description: Process health, content: {application/json: {schema: {type: object}}}}
+  /readyz:
+    get:
+      security: []
+      summary: Check service readiness
+      operationId: readiness
+      responses:
+        '200': {description: "API, database, migration, embedding worker, and index readiness", content: {application/json: {schema: {type: object}}}}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /v1/context:
+    post:
+      tags: [Context]
+      summary: Assemble ranked context
+      operationId: assembleContext
+      requestBody: {$ref: '#/components/requestBodies/ContextRequest'}
+      responses:
+        '200': {description: Ranked context, content: {application/json: {schema: {$ref: '#/components/schemas/ContextEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /v1/scopes:
+    post:
+      tags: [Entities]
+      summary: Create a scope
+      operationId: createScope
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Scope'}}}}
+      responses:
+        '201': {description: Scope, content: {application/json: {schema: {$ref: '#/components/schemas/ScopeEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+  /v1/scopes/{id}:
+    get:
+      tags: [Entities]
+      summary: Get a scope
+      operationId: getScope
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/WorkspaceID'}]
+      responses:
+        '200': {description: Scope, content: {application/json: {schema: {$ref: '#/components/schemas/ScopeEnvelope'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/entities:
+    post:
+      tags: [Entities]
+      summary: Create an entity
+      operationId: createEntity
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Entity'}}}}
+      responses:
+        '201': {description: Entity, content: {application/json: {schema: {$ref: '#/components/schemas/EntityEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+  /v1/entities/{id}:
+    get:
+      tags: [Entities]
+      summary: Get an entity
+      operationId: getEntity
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/WorkspaceID'}]
+      responses:
+        '200': {description: Entity, content: {application/json: {schema: {$ref: '#/components/schemas/EntityEnvelope'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/entities:resolve:
+    get:
+      tags: [Entities]
+      summary: Resolve entities
+      operationId: resolveEntities
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceID'}
+        - {name: q, in: query, required: true, schema: {type: string}}
+        - {name: scope, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true}
+      responses:
+        '200': {description: Matching entities, content: {application/json: {schema: {$ref: '#/components/schemas/EntityListEnvelope'}}}}
   /v1/artifacts:
-    get: {operationId: listArtifacts, responses: {'200': {description: Artifacts}}}
-    post: {operationId: createArtifact, responses: {'201': {description: Created}}}
-  /v1/artifacts/{id}: {get: {operationId: getArtifact, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Artifact}}}}
-  /v1/artifacts/{id}:version: {post: {operationId: versionArtifact, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Versioned}}}}
-  /v1/artifacts/{id}:activate: {post: {operationId: activateArtifact, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Activated}}}}
-  /v1/artifacts/{id}:supersede: {post: {operationId: supersedeArtifact, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Superseded}}}}
+    get:
+      tags: [Artifacts]
+      summary: List artifacts
+      operationId: listArtifacts
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceID'}
+        - {name: type, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string, enum: [draft, active, superseded, archived]}}
+        - {name: scope, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true}
+      responses:
+        '200': {description: Artifacts, content: {application/json: {schema: {$ref: '#/components/schemas/ArtifactListEnvelope'}}}}
+    post:
+      tags: [Artifacts]
+      summary: Create an artifact
+      operationId: createArtifact
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Artifact'}}}}
+      responses:
+        '201': {description: Artifact, content: {application/json: {schema: {$ref: '#/components/schemas/ArtifactEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+  /v1/artifacts/{id}:
+    get:
+      tags: [Artifacts]
+      summary: Get an artifact version
+      operationId: getArtifact
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/WorkspaceID'}, {$ref: '#/components/parameters/Version'}]
+      responses:
+        '200': {description: Artifact, content: {application/json: {schema: {$ref: '#/components/schemas/ArtifactEnvelope'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/artifacts/{id}:version:
+    post:
+      tags: [Artifacts]
+      summary: Create a new artifact version
+      operationId: versionArtifact
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Artifact'}}}}
+      responses:
+        '200': {description: New immutable artifact version, content: {application/json: {schema: {$ref: '#/components/schemas/ArtifactEnvelope'}}}}
+  /v1/artifacts/{id}:activate:
+    post:
+      tags: [Artifacts]
+      summary: Activate an artifact
+      operationId: activateArtifact
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {$ref: '#/components/requestBodies/WorkspaceMutation'}
+      responses:
+        '200': {description: Active artifact version, content: {application/json: {schema: {$ref: '#/components/schemas/ArtifactEnvelope'}}}}
+  /v1/artifacts/{id}:supersede:
+    post:
+      tags: [Artifacts]
+      summary: Supersede an artifact
+      operationId: supersedeArtifact
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {$ref: '#/components/requestBodies/WorkspaceMutation'}
+      responses:
+        '200': {description: Superseded artifact version, content: {application/json: {schema: {$ref: '#/components/schemas/ArtifactEnvelope'}}}}
   /v1/memories:
-    get: {operationId: searchMemories, responses: {'200': {description: Memories}}}
-    post: {operationId: createMemory, responses: {'201': {description: Created}}}
-  /v1/memories/{id}: {get: {operationId: getMemory, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Memory}}}}
-  /v1/memories/{id}:supersede: {post: {operationId: supersedeMemory, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Superseded}}}}
-  /v1/memories/{id}:archive: {post: {operationId: archiveMemory, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Archived}}}}
-  /v1/relationships: {post: {operationId: createRelationship, responses: {'201': {description: Created}}}}
-  /v1/workflow-events: {post: {operationId: ingestWorkflowEvent, responses: {'201': {description: Episode}}}}
-  /v1/exports: {post: {operationId: exportSnapshot, security: [{exportBearer: []}], responses: {'200': {description: Snapshot}}}}
-  /v1/imports: {post: {operationId: importSnapshot, security: [{exportBearer: []}], responses: {'201': {description: Import status}}}}
-  /v1/imports/{id}: {get: {operationId: getImport, security: [{exportBearer: []}], parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Import status}}}}
+    get:
+      tags: [Memories]
+      summary: Search memories
+      operationId: searchMemories
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceID'}
+        - {name: q, in: query, schema: {type: string}}
+        - {name: scope, in: query, schema: {type: array, items: {type: string}}, style: form, explode: true}
+      responses:
+        '200': {description: Memories, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryListEnvelope'}}}}
+    post:
+      tags: [Memories]
+      summary: Create a memory
+      operationId: createMemory
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Memory'}}}}
+      responses:
+        '201': {description: Memory, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryEnvelope'}}}}
+  /v1/memories/{id}:
+    get:
+      tags: [Memories]
+      summary: Get a memory version
+      operationId: getMemory
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/WorkspaceID'}, {$ref: '#/components/parameters/Version'}]
+      responses:
+        '200': {description: Memory, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryEnvelope'}}}}
+  /v1/memories/{id}:supersede:
+    post:
+      tags: [Memories]
+      summary: Supersede a memory
+      operationId: supersedeMemory
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {$ref: '#/components/requestBodies/WorkspaceMutation'}
+      responses:
+        '200': {description: Superseded memory version, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryEnvelope'}}}}
+  /v1/memories/{id}:archive:
+    post:
+      tags: [Memories]
+      summary: Archive a memory
+      operationId: archiveMemory
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {$ref: '#/components/requestBodies/WorkspaceMutation'}
+      responses:
+        '200': {description: Archived memory version, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryEnvelope'}}}}
+  /v1/relationships:
+    post:
+      tags: [Relationships]
+      summary: Create a relationship assertion
+      operationId: createRelationship
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Relationship'}}}}
+      responses:
+        '201': {description: Immutable relationship assertion, content: {application/json: {schema: {$ref: '#/components/schemas/RelationshipEnvelope'}}}}
+  /v1/workflow-events:
+    post:
+      tags: [Workflow]
+      summary: Ingest a meaningful workflow event
+      operationId: ingestWorkflowEvent
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/ActorID'}, {$ref: '#/components/parameters/ActorType'}, {$ref: '#/components/parameters/ProvenanceSource'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowEvent'}}}}
+      responses:
+        '201': {description: Idempotent episode memory, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryEnvelope'}}}}
+  /v1/exports:
+    post:
+      tags: [Migration]
+      summary: Export a workspace snapshot
+      operationId: exportSnapshot
+      security: [{exportBearer: []}]
+      requestBody: {$ref: '#/components/requestBodies/WorkspaceMutation'}
+      responses:
+        '200': {description: Ordered checksummed snapshot, content: {application/json: {schema: {$ref: '#/components/schemas/SnapshotEnvelope'}}}}
+  /v1/imports:
+    post:
+      tags: [Migration]
+      summary: Import a workspace snapshot
+      operationId: importSnapshot
+      security: [{exportBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Snapshot'}}}}
+      responses:
+        '201': {description: Import result, content: {application/json: {schema: {$ref: '#/components/schemas/ImportEnvelope'}}}}
+  /v1/imports/{id}:
+    get:
+      tags: [Migration]
+      summary: Get import status
+      operationId: getImport
+      security: [{exportBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses:
+        '200': {description: Import result for this process lifetime, content: {application/json: {schema: {$ref: '#/components/schemas/ImportEnvelope'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
 components:
-  securitySchemes: {bearerAuth: {type: http, scheme: bearer}, exportBearer: {type: http, scheme: bearer}}
-  parameters: {id: {name: id, in: path, required: true, schema: {type: string}}}
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, description: Workspace-scoped ordinary API token}
+    exportBearer: {type: http, scheme: bearer, description: Separately scoped export/import token}
+  parameters:
+    ID: {name: id, in: path, required: true, schema: {type: string}}
+    WorkspaceID: {name: workspace_id, in: query, required: false, schema: {type: string}}
+    Version: {name: version, in: query, required: false, schema: {type: integer, minimum: 1}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1}}
+    ActorID: {name: X-Actor-ID, in: header, required: true, schema: {type: string, minLength: 1}}
+    ActorType: {name: X-Actor-Type, in: header, required: true, schema: {type: string, minLength: 1}}
+    ProvenanceSource: {name: X-Provenance-Source, in: header, required: true, schema: {type: string, minLength: 1}}
+  requestBodies:
+    ContextRequest: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ContextRequest'}}}}
+    WorkspaceMutation: {required: true, content: {application/json: {schema: {type: object, required: [workspace_id], properties: {workspace_id: {type: string}}}}}}
+  responses:
+    Invalid: {description: Invalid request, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}}
+    Unauthorized: {description: Invalid bearer token, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}}
+    Forbidden: {description: Token is not scoped to the requested workspace, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}}
+    NotFound: {description: Object not found, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}}
+    Unavailable: {description: Service dependency unavailable, content: {application/json: {schema: {type: object}}}}
+  schemas:
+    Actor:
+      type: object
+      required: [id, type]
+      properties: {id: {type: string}, type: {type: string}}
+    Provenance:
+      type: object
+      required: [source]
+      properties:
+        source: {type: string}
+        source_id: {type: string}
+        source_url: {type: string, format: uri}
+        detail: {type: object, additionalProperties: true}
+    ExternalRef:
+      type: object
+      required: [system, id]
+      properties: {system: {type: string}, id: {type: string}, url: {type: string, format: uri}}
+    Scope:
+      type: object
+      required: [type, name, canonical_key]
+      properties:
+        id: {type: string}
+        workspace_id: {type: string}
+        parent_id: {type: string}
+        type: {type: string}
+        name: {type: string}
+        canonical_key: {type: string}
+        created_at: {type: string, format: date-time}
+    Entity:
+      type: object
+      required: [scope_id, type, display_name]
+      properties:
+        id: {type: string}
+        workspace_id: {type: string}
+        scope_id: {type: string}
+        version: {type: integer}
+        type: {type: string}
+        display_name: {type: string}
+        aliases: {type: array, items: {type: string}}
+        external_refs: {type: array, items: {$ref: '#/components/schemas/ExternalRef'}}
+        metadata: {type: object, additionalProperties: true}
+        state: {type: string, enum: [active, superseded, archived, tombstoned]}
+        provenance: {$ref: '#/components/schemas/Provenance'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    Artifact:
+      type: object
+      required: [scope_id, type, title]
+      properties:
+        id: {type: string}
+        workspace_id: {type: string}
+        scope_id: {type: string}
+        version: {type: integer}
+        type: {type: string}
+        title: {type: string}
+        status: {type: string, enum: [draft, active, superseded, archived]}
+        content: {type: string, maxLength: 4194304}
+        content_hash: {type: string}
+        source_ref: {$ref: '#/components/schemas/ExternalRef'}
+        metadata: {type: object, additionalProperties: true}
+        provenance: {$ref: '#/components/schemas/Provenance'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    Memory:
+      type: object
+      required: [scope_id, type, content]
+      properties:
+        id: {type: string}
+        workspace_id: {type: string}
+        scope_id: {type: string}
+        version: {type: integer}
+        type: {type: string, enum: [instruction, fact, decision, episode]}
+        subject: {type: string}
+        predicate: {type: string}
+        object: {type: string}
+        title: {type: string}
+        content: {type: string, maxLength: 1048576}
+        importance: {type: number, minimum: 0, maximum: 1}
+        confidence: {type: number, minimum: 0, maximum: 1}
+        confidence_source: {type: string, enum: [human_confirmed, agent_inferred, imported, external_system, observed]}
+        valid_from: {type: string, format: date-time}
+        valid_until: {type: string, format: date-time}
+        state: {type: string, enum: [active, superseded, archived, tombstoned]}
+        embedding_state: {type: string, enum: [not_configured, pending, ready, failed]}
+        metadata: {type: object, additionalProperties: true}
+        provenance: {$ref: '#/components/schemas/Provenance'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    Relationship:
+      type: object
+      required: [scope_id, from_type, from_id, predicate, to_type, to_id]
+      properties:
+        id: {type: string}
+        workspace_id: {type: string}
+        scope_id: {type: string}
+        version: {type: integer}
+        from_type: {type: string}
+        from_id: {type: string}
+        predicate: {type: string}
+        to_type: {type: string}
+        to_id: {type: string}
+        confidence: {type: number, minimum: 0, maximum: 1}
+        state: {type: string}
+        metadata: {type: object, additionalProperties: true}
+        provenance: {$ref: '#/components/schemas/Provenance'}
+        created_at: {type: string, format: date-time}
+    ArtifactSelector:
+      type: object
+      properties:
+        type: {type: string}
+        status: {type: string}
+        id: {type: string}
+        version: {type: integer}
+    ContextRequest:
+      type: object
+      required: [workspace_id, query, token_budget]
+      properties:
+        workspace_id: {type: string}
+        query: {type: string}
+        scopes: {type: array, items: {type: string}}
+        entities: {type: array, items: {type: string}}
+        artifact_selectors: {type: array, items: {$ref: '#/components/schemas/ArtifactSelector'}}
+        token_budget: {type: integer, minimum: 1}
+    RankedMemory:
+      type: object
+      required: [memory, score, explanation]
+      properties:
+        memory: {$ref: '#/components/schemas/Memory'}
+        score: {type: number}
+        explanation: {type: object, additionalProperties: {type: number}}
+    RankingMechanism:
+      type: object
+      required: [version, memory_weights, artifact_policy, context_order, instruction_override]
+      properties:
+        version: {type: string}
+        memory_weights: {type: object, additionalProperties: {type: number}}
+        artifact_policy: {type: array, items: {type: string}}
+        context_order: {type: array, items: {type: string}}
+        instruction_override: {type: string}
+    ArtifactExplanation:
+      type: object
+      required: [artifact_id, reasons]
+      properties: {artifact_id: {type: string}, reasons: {type: array, items: {type: string}}}
+    ContextResponse:
+      type: object
+      required: [schema, ranking, retrieval_mode, artifacts, artifact_explanations, instructions, entities, decisions, facts, episodes, token_estimate, index_fresh]
+      properties:
+        schema: {type: string, const: vessica.knowledge/v1}
+        ranking: {$ref: '#/components/schemas/RankingMechanism'}
+        retrieval_mode: {type: string, enum: [lexical, semantic_hybrid]}
+        artifacts: {type: array, items: {$ref: '#/components/schemas/Artifact'}}
+        artifact_explanations: {type: array, items: {$ref: '#/components/schemas/ArtifactExplanation'}}
+        instructions: {type: array, items: {$ref: '#/components/schemas/RankedMemory'}}
+        entities: {type: array, items: {$ref: '#/components/schemas/Entity'}}
+        decisions: {type: array, items: {$ref: '#/components/schemas/RankedMemory'}}
+        facts: {type: array, items: {$ref: '#/components/schemas/RankedMemory'}}
+        episodes: {type: array, items: {$ref: '#/components/schemas/RankedMemory'}}
+        token_estimate: {type: integer}
+        omissions: {type: array, items: {type: string}}
+        index_fresh: {type: boolean}
+        embedding_model: {type: string}
+    WorkflowEvent:
+      type: object
+      required: [id, workspace_id, repository_scope_id, type, summary, occurred_at, actor]
+      properties:
+        id: {type: string}
+        workspace_id: {type: string}
+        repository_scope_id: {type: string}
+        type: {type: string}
+        summary: {type: string}
+        occurred_at: {type: string, format: date-time}
+        actor: {$ref: '#/components/schemas/Actor'}
+        references: {type: array, items: {$ref: '#/components/schemas/ExternalRef'}}
+        metadata: {type: object, additionalProperties: true}
+    Event:
+      type: object
+      required: [id, workspace_id, aggregate_type, aggregate_id, aggregate_version, event_type, actor, provenance, idempotency_key, payload, occurred_at]
+      properties:
+        id: {type: string}
+        workspace_id: {type: string}
+        aggregate_type: {type: string}
+        aggregate_id: {type: string}
+        aggregate_version: {type: integer}
+        event_type: {type: string}
+        actor: {$ref: '#/components/schemas/Actor'}
+        provenance: {$ref: '#/components/schemas/Provenance'}
+        idempotency_key: {type: string}
+        payload: {type: object, additionalProperties: true}
+        occurred_at: {type: string, format: date-time}
+    Snapshot:
+      type: object
+      required: [schema, workspace_id, exported_at, scopes, entities, artifacts, memories, relationships, events, counts, checksum]
+      properties:
+        schema: {type: string, const: vessica.knowledge/v1}
+        workspace_id: {type: string}
+        exported_at: {type: string, format: date-time}
+        high_watermark: {type: string}
+        scopes: {type: array, items: {$ref: '#/components/schemas/Scope'}}
+        entities: {type: array, items: {$ref: '#/components/schemas/Entity'}}
+        artifacts: {type: array, items: {$ref: '#/components/schemas/Artifact'}}
+        memories: {type: array, items: {$ref: '#/components/schemas/Memory'}}
+        relationships: {type: array, items: {$ref: '#/components/schemas/Relationship'}}
+        events: {type: array, items: {$ref: '#/components/schemas/Event'}}
+        counts: {type: object, additionalProperties: {type: integer}}
+        checksum: {type: string}
+    ImportResult:
+      type: object
+      properties:
+        id: {type: string}
+        status: {type: string, enum: [completed, failed]}
+        imported: {type: boolean}
+        counts: {type: object, additionalProperties: {type: integer}}
+        checksum: {type: string}
+    APIError:
+      type: object
+      required: [code, message]
+      properties: {code: {type: string}, message: {type: string}, status: {type: integer}}
+    EnvelopeBase:
+      type: object
+      required: [schema, ok]
+      properties: {schema: {type: string, const: vessica.knowledge/v1}, ok: {type: boolean}}
+    ScopeEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/Scope'}}}]}
+    EntityEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/Entity'}}}]}
+    EntityListEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Entity'}}}}]}
+    ArtifactEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/Artifact'}}}]}
+    ArtifactListEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Artifact'}}}}]}
+    MemoryEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/Memory'}}}]}
+    MemoryListEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Memory'}}}}]}
+    RelationshipEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/Relationship'}}}]}
+    ContextEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/ContextResponse'}}}]}
+    SnapshotEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/Snapshot'}}}]}
+    ImportEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/ImportResult'}}}]}
+    ErrorEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {error: {$ref: '#/components/schemas/APIError'}}}]}
