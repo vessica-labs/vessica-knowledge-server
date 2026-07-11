@@ -1,0 +1,29 @@
+openapi: 3.1.0
+info: {title: Vessica Knowledge API, version: 1.0.0}
+security: [{bearerAuth: []}]
+paths:
+  /v1/context: {post: {operationId: assembleContext, responses: {'200': {description: Ranked context}}}}
+  /v1/entities: {post: {operationId: createEntity, responses: {'201': {description: Created}}}}
+  /v1/entities/{id}: {get: {operationId: getEntity, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Entity}}}}
+  /v1/entities:resolve: {get: {operationId: resolveEntities, responses: {'200': {description: Matches}}}}
+  /v1/artifacts:
+    get: {operationId: listArtifacts, responses: {'200': {description: Artifacts}}}
+    post: {operationId: createArtifact, responses: {'201': {description: Created}}}
+  /v1/artifacts/{id}: {get: {operationId: getArtifact, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Artifact}}}}
+  /v1/artifacts/{id}:version: {post: {operationId: versionArtifact, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Versioned}}}}
+  /v1/artifacts/{id}:activate: {post: {operationId: activateArtifact, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Activated}}}}
+  /v1/artifacts/{id}:supersede: {post: {operationId: supersedeArtifact, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Superseded}}}}
+  /v1/memories:
+    get: {operationId: searchMemories, responses: {'200': {description: Memories}}}
+    post: {operationId: createMemory, responses: {'201': {description: Created}}}
+  /v1/memories/{id}: {get: {operationId: getMemory, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Memory}}}}
+  /v1/memories/{id}:supersede: {post: {operationId: supersedeMemory, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Superseded}}}}
+  /v1/memories/{id}:archive: {post: {operationId: archiveMemory, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Archived}}}}
+  /v1/relationships: {post: {operationId: createRelationship, responses: {'201': {description: Created}}}}
+  /v1/workflow-events: {post: {operationId: ingestWorkflowEvent, responses: {'201': {description: Episode}}}}
+  /v1/exports: {post: {operationId: exportSnapshot, responses: {'200': {description: Snapshot}}}}
+  /v1/imports: {post: {operationId: importSnapshot, responses: {'201': {description: Import status}}}}
+  /v1/imports/{id}: {get: {operationId: getImport, parameters: [{$ref: '#/components/parameters/id'}], responses: {'200': {description: Import status}}}}
+components:
+  securitySchemes: {bearerAuth: {type: http, scheme: bearer}}
+  parameters: {id: {name: id, in: path, required: true, schema: {type: string}}}
