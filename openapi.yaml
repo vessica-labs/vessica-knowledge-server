@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Vessica Knowledge API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Workspace-scoped API for authoritative artifacts, durable memories, entities,
     relationships, ranked context, workflow episodes, and verified snapshots.
@@ -39,6 +39,27 @@ paths:
       responses:
         '200': {description: "API, database, migration, embedding worker, and index readiness", content: {application/json: {schema: {type: object}}}}
         '503': {$ref: '#/components/responses/Unavailable'}
+  /v1/status:
+    get:
+      tags: [Context]
+      summary: Read retrieval and index status
+      operationId: getKnowledgeStatus
+      parameters: [{$ref: '#/components/parameters/WorkspaceID'}]
+      responses:
+        '200': {description: Retrieval and embedding status, content: {application/json: {schema: {$ref: '#/components/schemas/StatusEnvelope'}}}}
+  /v1/search:
+    get:
+      tags: [Context]
+      summary: Search entities, artifacts, and memories
+      operationId: searchKnowledge
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceID'}
+        - {name: q, in: query, schema: {type: string}}
+        - {name: object_type, in: query, schema: {type: string, enum: [entity, artifact, memory]}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: Paginated search results, content: {application/json: {schema: {$ref: '#/components/schemas/SearchPageEnvelope'}}}}
   /v1/context:
     post:
       tags: [Context]
@@ -70,6 +91,13 @@ paths:
         '200': {description: Scope, content: {application/json: {schema: {$ref: '#/components/schemas/ScopeEnvelope'}}}}
         '404': {$ref: '#/components/responses/NotFound'}
   /v1/entities:
+    get:
+      tags: [Entities]
+      summary: List current entities
+      operationId: listEntities
+      parameters: [{$ref: '#/components/parameters/WorkspaceID'}, {$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}]
+      responses:
+        '200': {description: Paginated entities, content: {application/json: {schema: {$ref: '#/components/schemas/EntityPageEnvelope'}}}}
     post:
       tags: [Entities]
       summary: Create an entity
@@ -129,6 +157,14 @@ paths:
       responses:
         '200': {description: Artifact, content: {application/json: {schema: {$ref: '#/components/schemas/ArtifactEnvelope'}}}}
         '404': {$ref: '#/components/responses/NotFound'}
+  /v1/artifacts/{id}/versions:
+    get:
+      tags: [Artifacts]
+      summary: List immutable artifact versions
+      operationId: listArtifactVersions
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/WorkspaceID'}, {$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}]
+      responses:
+        '200': {description: Artifact versions newest first, content: {application/json: {schema: {$ref: '#/components/schemas/ArtifactPageEnvelope'}}}}
   /v1/artifacts/{id}:version:
     post:
       tags: [Artifacts]
@@ -183,6 +219,14 @@ paths:
       parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/WorkspaceID'}, {$ref: '#/components/parameters/Version'}]
       responses:
         '200': {description: Memory, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryEnvelope'}}}}
+  /v1/memories/{id}/versions:
+    get:
+      tags: [Memories]
+      summary: List immutable memory versions
+      operationId: listMemoryVersions
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/WorkspaceID'}, {$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}]
+      responses:
+        '200': {description: Memory versions newest first, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryPageEnvelope'}}}}
   /v1/memories/{id}:supersede:
     post:
       tags: [Memories]
@@ -202,6 +246,17 @@ paths:
       responses:
         '200': {description: Archived memory version, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryEnvelope'}}}}
   /v1/relationships:
+    get:
+      tags: [Relationships]
+      summary: List incoming and outgoing relationships for an object
+      operationId: listRelationships
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceID'}
+        - {name: object_id, in: query, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: Paginated relationships, content: {application/json: {schema: {$ref: '#/components/schemas/RelationshipPageEnvelope'}}}}
     post:
       tags: [Relationships]
       summary: Create a relationship assertion
@@ -256,6 +311,8 @@ components:
     ID: {name: id, in: path, required: true, schema: {type: string}}
     WorkspaceID: {name: workspace_id, in: query, required: false, schema: {type: string}}
     Version: {name: version, in: query, required: false, schema: {type: integer, minimum: 1}}
+    Cursor: {name: cursor, in: query, required: false, schema: {type: string}}
+    Limit: {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1}}
     ActorID: {name: X-Actor-ID, in: header, required: true, schema: {type: string, minLength: 1}}
     ActorType: {name: X-Actor-Type, in: header, required: true, schema: {type: string, minLength: 1}}
@@ -270,6 +327,29 @@ components:
     NotFound: {description: Object not found, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}}
     Unavailable: {description: Service dependency unavailable, content: {application/json: {schema: {type: object}}}}
   schemas:
+    Page:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {}}, next_cursor: {type: string}}
+    StatusEnvelope:
+      type: object
+      required: [schema, ok, data]
+      properties: {schema: {type: string}, ok: {type: boolean}, data: {type: object}}
+    SearchPageEnvelope:
+      type: object
+      properties: {schema: {type: string}, ok: {type: boolean}, data: {$ref: '#/components/schemas/Page'}}
+    EntityPageEnvelope:
+      type: object
+      properties: {schema: {type: string}, ok: {type: boolean}, data: {$ref: '#/components/schemas/Page'}}
+    ArtifactPageEnvelope:
+      type: object
+      properties: {schema: {type: string}, ok: {type: boolean}, data: {$ref: '#/components/schemas/Page'}}
+    MemoryPageEnvelope:
+      type: object
+      properties: {schema: {type: string}, ok: {type: boolean}, data: {$ref: '#/components/schemas/Page'}}
+    RelationshipPageEnvelope:
+      type: object
+      properties: {schema: {type: string}, ok: {type: boolean}, data: {$ref: '#/components/schemas/Page'}}
     Actor:
       type: object
       required: [id, type]

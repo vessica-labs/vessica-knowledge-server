@@ -4,6 +4,31 @@ import "time"
 
 const APIVersion = "vessica.knowledge/v1"
 
+type Page[T any] struct {
+	Items      []T    `json:"items"`
+	NextCursor string `json:"next_cursor,omitempty"`
+}
+
+type SearchResult struct {
+	ObjectType string    `json:"object_type"`
+	ID         string    `json:"id"`
+	ScopeID    string    `json:"scope_id"`
+	Subtype    string    `json:"subtype"`
+	Title      string    `json:"title"`
+	Summary    string    `json:"summary,omitempty"`
+	State      string    `json:"state,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type Status struct {
+	Schema           string `json:"schema"`
+	RetrievalMode    string `json:"retrieval_mode"`
+	EmbeddingState   string `json:"embedding_state"`
+	EmbeddingModel   string `json:"embedding_model,omitempty"`
+	EmbeddingBacklog int    `json:"embedding_backlog"`
+	IndexFresh       bool   `json:"index_fresh"`
+}
+
 type Actor struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`

@@ -243,6 +243,24 @@ func (s *SQLStore) GetEntity(ctx context.Context, w, id string) (Entity, error) 
 	q := `SELECT e.id,e.workspace_id,e.scope_id,e.version,e.type,e.display_name,e.aliases_json,e.external_refs_json,e.metadata_json,e.state,e.provenance_json,e.created_at,e.updated_at FROM entities e JOIN entity_current c ON c.workspace_id=e.workspace_id AND c.id=e.id AND c.version=e.version WHERE e.workspace_id=? AND e.id=?`
 	return scanEntity(s.db.QueryRowContext(ctx, s.q(q), w, id))
 }
+func (s *SQLStore) ListEntities(ctx context.Context, w string, scopes []string, typ, state string) ([]Entity, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT e.id,e.workspace_id,e.scope_id,e.version,e.type,e.display_name,e.aliases_json,e.external_refs_json,e.metadata_json,e.state,e.provenance_json,e.created_at,e.updated_at FROM entities e JOIN entity_current c ON c.workspace_id=e.workspace_id AND c.id=e.id AND c.version=e.version WHERE e.workspace_id=? ORDER BY e.updated_at DESC,e.id`), w)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Entity
+	for rows.Next() {
+		v, scanErr := scanEntity(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		if includes(scopes, v.ScopeID) && (typ == "" || v.Type == typ) && (state == "" || v.State == state) {
+			out = append(out, v)
+		}
+	}
+	return out, rows.Err()
+}
 func scanEntity(row scanner) (Entity, error) {
 	var v Entity
 	var a, r, m, p, c, u string
@@ -298,6 +316,22 @@ func (s *SQLStore) GetArtifact(ctx context.Context, w, id string, version int) (
 		args = append(args, version)
 	}
 	return scanArtifact(s.db.QueryRowContext(ctx, s.q(q), args...))
+}
+func (s *SQLStore) ListArtifactVersions(ctx context.Context, w, id string) ([]Artifact, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT a.id,a.workspace_id,a.scope_id,a.version,a.type,a.title,a.status,a.content,a.content_hash,COALESCE(a.source_ref_json,''),a.metadata_json,a.provenance_json,a.created_at,a.updated_at FROM artifacts a WHERE a.workspace_id=? AND a.id=? ORDER BY a.version DESC`), w, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Artifact
+	for rows.Next() {
+		v, scanErr := scanArtifact(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 func scanArtifact(row scanner) (Artifact, error) {
 	var v Artifact
@@ -411,6 +445,22 @@ func (s *SQLStore) GetMemory(ctx context.Context, w, id string, version int) (Me
 		args = append(args, version)
 	}
 	return scanMemory(s.db.QueryRowContext(ctx, s.q(q), args...))
+}
+func (s *SQLStore) ListMemoryVersions(ctx context.Context, w, id string) ([]Memory, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT m.id,m.workspace_id,m.scope_id,m.version,m.type,COALESCE(m.subject,''),COALESCE(m.predicate,''),COALESCE(m.object,''),m.title,m.content,m.importance,m.confidence,m.confidence_source,COALESCE(m.valid_from,''),COALESCE(m.valid_until,''),m.state,m.embedding_state,m.metadata_json,m.provenance_json,m.created_at,m.updated_at FROM memories m WHERE m.workspace_id=? AND m.id=? ORDER BY m.version DESC`), w, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Memory
+	for rows.Next() {
+		v, scanErr := scanMemory(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 func scanMemory(row scanner) (Memory, error) {
 	var v Memory

@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -38,25 +39,31 @@ func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /healthz", s.health)
 	m.HandleFunc("GET /readyz", s.ready)
+	m.HandleFunc("GET /v1/status", s.auth(s.status))
+	m.HandleFunc("GET /v1/search", s.auth(s.search))
 	m.HandleFunc("POST /v1/context", s.auth(s.context))
 	m.HandleFunc("POST /v1/scopes", s.auth(s.createScope))
 	m.HandleFunc("GET /v1/scopes/{id}", s.auth(s.getScope))
 	m.HandleFunc("POST /v1/entities", s.auth(s.createEntity))
+	m.HandleFunc("GET /v1/entities", s.auth(s.listEntities))
 	m.HandleFunc("GET /v1/entities/{id}", s.auth(s.getEntity))
 	m.HandleFunc("GET /v1/entities:resolve", s.auth(s.resolveEntities))
 	m.HandleFunc("POST /v1/artifacts", s.auth(s.createArtifact))
 	m.HandleFunc("GET /v1/artifacts/{id}", s.auth(s.getArtifact))
+	m.HandleFunc("GET /v1/artifacts/{id}/versions", s.auth(s.artifactVersions))
 	m.HandleFunc("GET /v1/artifacts", s.auth(s.listArtifacts))
 	m.HandleFunc("POST /v1/artifacts/{id}/versions", s.auth(s.versionArtifact))
 	m.HandleFunc("POST /v1/artifacts/{id}/activate", s.auth(s.artifactStatus("active")))
 	m.HandleFunc("POST /v1/artifacts/{id}/supersede", s.auth(s.artifactStatus("superseded")))
 	m.HandleFunc("POST /v1/memories", s.auth(s.createMemory))
 	m.HandleFunc("GET /v1/memories/{id}", s.auth(s.getMemory))
+	m.HandleFunc("GET /v1/memories/{id}/versions", s.auth(s.memoryVersions))
 	m.HandleFunc("GET /v1/memories", s.auth(s.searchMemories))
 	m.HandleFunc("POST /v1/memories/{id}/versions", s.auth(s.versionMemory))
 	m.HandleFunc("POST /v1/memories/{id}/supersede", s.auth(s.memoryState("superseded")))
 	m.HandleFunc("POST /v1/memories/{id}/archive", s.auth(s.memoryState("archived")))
 	m.HandleFunc("POST /v1/relationships", s.auth(s.createRelationship))
+	m.HandleFunc("GET /v1/relationships", s.auth(s.listRelationships))
 	m.HandleFunc("POST /v1/workflow-events", s.auth(s.workflow))
 	m.HandleFunc("POST /v1/exports", s.authWith(s.exportCredential(), s.export))
 	m.HandleFunc("POST /v1/imports", s.authWith(s.exportCredential(), s.importSnapshot))
@@ -72,6 +79,102 @@ func (s *Server) Handler() http.Handler {
 		}
 		m.ServeHTTP(w, r)
 	})
+}
+func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+	backlog, err := s.Service.Store.EmbeddingBacklog(r.Context(), workspace(r, s.DefaultWorkspace))
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	result := knowledge.Status{Schema: knowledge.APIVersion, RetrievalMode: "lexical", EmbeddingState: "not_configured", EmbeddingBacklog: backlog, IndexFresh: backlog == 0}
+	if s.Service.Embedder != nil {
+		result.RetrievalMode = "semantic_hybrid"
+		result.EmbeddingState = "configured"
+		result.EmbeddingModel = s.Service.Embedder.Model()
+	}
+	respond(w, result, nil, http.StatusOK)
+}
+
+func cursorOffset(raw string) int {
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(string(decoded))
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+func pageSize(r *http.Request) int {
+	n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if n <= 0 {
+		return 50
+	}
+	if n > 200 {
+		return 200
+	}
+	return n
+}
+func paginate[T any](items []T, r *http.Request) knowledge.Page[T] {
+	offset, limit := cursorOffset(r.URL.Query().Get("cursor")), pageSize(r)
+	if offset > len(items) {
+		offset = len(items)
+	}
+	end := offset + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	result := knowledge.Page[T]{Items: items[offset:end]}
+	if end < len(items) {
+		result.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(end)))
+	}
+	return result
+}
+
+func (s *Server) search(w http.ResponseWriter, r *http.Request) {
+	ws, q, scopes := workspace(r, s.DefaultWorkspace), strings.TrimSpace(r.URL.Query().Get("q")), r.URL.Query()["scope"]
+	entities, err := s.Service.Store.ResolveEntities(r.Context(), ws, scopes, q)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	artifacts, err := s.Service.Store.ListArtifacts(r.Context(), ws, scopes, nil)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	memories, err := s.Service.Store.SearchMemories(r.Context(), ws, scopes, q, 500)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	want := strings.TrimSpace(r.URL.Query().Get("object_type"))
+	var results []knowledge.SearchResult
+	if want == "" || want == "entity" {
+		for _, v := range entities {
+			results = append(results, knowledge.SearchResult{ObjectType: "entity", ID: v.ID, ScopeID: v.ScopeID, Subtype: v.Type, Title: v.DisplayName, State: v.State, UpdatedAt: v.UpdatedAt})
+		}
+	}
+	if want == "" || want == "artifact" {
+		for _, v := range artifacts {
+			if q == "" || strings.Contains(strings.ToLower(v.Title+" "+v.Content), strings.ToLower(q)) {
+				results = append(results, knowledge.SearchResult{ObjectType: "artifact", ID: v.ID, ScopeID: v.ScopeID, Subtype: v.Type, Title: v.Title, Summary: truncate(v.Content, 240), State: v.Status, UpdatedAt: v.UpdatedAt})
+			}
+		}
+	}
+	if want == "" || want == "memory" {
+		for _, v := range memories {
+			results = append(results, knowledge.SearchResult{ObjectType: "memory", ID: v.ID, ScopeID: v.ScopeID, Subtype: v.Type, Title: v.Title, Summary: truncate(v.Content, 240), State: v.State, UpdatedAt: v.UpdatedAt})
+		}
+	}
+	respond(w, paginate(results, r), nil, http.StatusOK)
+}
+func truncate(v string, n int) string {
+	if len(v) <= n {
+		return v
+	}
+	return v[:n] + "…"
 }
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]any{"service": "vessica-knowledge-server", "ok": true})
@@ -221,6 +324,14 @@ func (s *Server) getEntity(w http.ResponseWriter, r *http.Request) {
 	got, e := s.Service.Store.GetEntity(r.Context(), workspace(r, s.DefaultWorkspace), r.PathValue("id"))
 	respond(w, got, e, 200)
 }
+func (s *Server) listEntities(w http.ResponseWriter, r *http.Request) {
+	got, e := s.Service.Store.ListEntities(r.Context(), workspace(r, s.DefaultWorkspace), r.URL.Query()["scope"], r.URL.Query().Get("type"), r.URL.Query().Get("state"))
+	if e != nil {
+		failure(w, e)
+		return
+	}
+	respond(w, paginate(got, r), nil, http.StatusOK)
+}
 func (s *Server) resolveEntities(w http.ResponseWriter, r *http.Request) {
 	got, e := s.Service.Store.ResolveEntities(r.Context(), workspace(r, s.DefaultWorkspace), r.URL.Query()["scope"], r.URL.Query().Get("q"))
 	respond(w, got, e, 200)
@@ -272,6 +383,14 @@ func (s *Server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	n, _ := strconv.Atoi(r.URL.Query().Get("version"))
 	got, e := s.Service.Store.GetArtifact(r.Context(), workspace(r, s.DefaultWorkspace), r.PathValue("id"), n)
 	respond(w, got, e, 200)
+}
+func (s *Server) artifactVersions(w http.ResponseWriter, r *http.Request) {
+	got, e := s.Service.Store.ListArtifactVersions(r.Context(), workspace(r, s.DefaultWorkspace), r.PathValue("id"))
+	if e != nil {
+		failure(w, e)
+		return
+	}
+	respond(w, paginate(got, r), nil, http.StatusOK)
 }
 func (s *Server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	sel := knowledge.ArtifactSelector{Type: r.URL.Query().Get("type"), Status: r.URL.Query().Get("status")}
@@ -326,6 +445,14 @@ func (s *Server) getMemory(w http.ResponseWriter, r *http.Request) {
 	got, e := s.Service.Store.GetMemory(r.Context(), workspace(r, s.DefaultWorkspace), r.PathValue("id"), n)
 	respond(w, got, e, 200)
 }
+func (s *Server) memoryVersions(w http.ResponseWriter, r *http.Request) {
+	got, e := s.Service.Store.ListMemoryVersions(r.Context(), workspace(r, s.DefaultWorkspace), r.PathValue("id"))
+	if e != nil {
+		failure(w, e)
+		return
+	}
+	respond(w, paginate(got, r), nil, http.StatusOK)
+}
 func (s *Server) searchMemories(w http.ResponseWriter, r *http.Request) {
 	got, e := s.Service.Store.SearchMemories(r.Context(), workspace(r, s.DefaultWorkspace), r.URL.Query()["scope"], r.URL.Query().Get("q"), 100)
 	respond(w, got, e, 200)
@@ -342,6 +469,19 @@ func (s *Server) createRelationship(w http.ResponseWriter, r *http.Request) {
 	}
 	got, e := s.Service.CreateRelationship(r.Context(), o, v)
 	respond(w, got, e, 201)
+}
+func (s *Server) listRelationships(w http.ResponseWriter, r *http.Request) {
+	objectID := r.URL.Query().Get("object_id")
+	if objectID == "" {
+		failure(w, knowledge.Invalid("object_id required"))
+		return
+	}
+	got, e := s.Service.Store.ListRelationships(r.Context(), workspace(r, s.DefaultWorkspace), objectID)
+	if e != nil {
+		failure(w, e)
+		return
+	}
+	respond(w, paginate(got, r), nil, http.StatusOK)
 }
 func (s *Server) workflow(w http.ResponseWriter, r *http.Request) {
 	var v knowledge.WorkflowEvent

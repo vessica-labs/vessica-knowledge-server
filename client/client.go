@@ -90,6 +90,34 @@ func (c *Client) ResolveEntities(ctx context.Context, w, q string, scopes []stri
 	e := c.do(ctx, "GET", u, "", nil, &out)
 	return out, e
 }
+func (c *Client) ListEntities(ctx context.Context, w, typ, state, cursor string, limit int, scopes []string) (knowledge.Page[knowledge.Entity], error) {
+	u := "/v1/entities?workspace_id=" + url.QueryEscape(w) + "&type=" + url.QueryEscape(typ) + "&state=" + url.QueryEscape(state) + "&cursor=" + url.QueryEscape(cursor) + "&limit=" + fmt.Sprint(limit)
+	for _, s := range scopes {
+		u += "&scope=" + url.QueryEscape(s)
+	}
+	var out knowledge.Page[knowledge.Entity]
+	e := c.do(ctx, "GET", u, "", nil, &out)
+	return out, e
+}
+func (c *Client) GetEntity(ctx context.Context, w, id string) (knowledge.Entity, error) {
+	var out knowledge.Entity
+	e := c.do(ctx, "GET", "/v1/entities/"+url.PathEscape(id)+"?workspace_id="+url.QueryEscape(w), "", nil, &out)
+	return out, e
+}
+func (c *Client) Status(ctx context.Context, w string) (knowledge.Status, error) {
+	var out knowledge.Status
+	e := c.do(ctx, "GET", "/v1/status?workspace_id="+url.QueryEscape(w), "", nil, &out)
+	return out, e
+}
+func (c *Client) Search(ctx context.Context, w, q, objectType, cursor string, limit int, scopes []string) (knowledge.Page[knowledge.SearchResult], error) {
+	u := "/v1/search?workspace_id=" + url.QueryEscape(w) + "&q=" + url.QueryEscape(q) + "&object_type=" + url.QueryEscape(objectType) + "&cursor=" + url.QueryEscape(cursor) + "&limit=" + fmt.Sprint(limit)
+	for _, s := range scopes {
+		u += "&scope=" + url.QueryEscape(s)
+	}
+	var out knowledge.Page[knowledge.SearchResult]
+	e := c.do(ctx, "GET", u, "", nil, &out)
+	return out, e
+}
 func (c *Client) CreateArtifact(ctx context.Context, key string, v knowledge.Artifact) (knowledge.Artifact, error) {
 	var out knowledge.Artifact
 	e := c.do(ctx, "POST", "/v1/artifacts", key, v, &out)
@@ -98,6 +126,11 @@ func (c *Client) CreateArtifact(ctx context.Context, key string, v knowledge.Art
 func (c *Client) GetArtifact(ctx context.Context, w, id string, version int) (knowledge.Artifact, error) {
 	var out knowledge.Artifact
 	e := c.do(ctx, "GET", fmt.Sprintf("/v1/artifacts/%s?workspace_id=%s&version=%d", url.PathEscape(id), url.QueryEscape(w), version), "", nil, &out)
+	return out, e
+}
+func (c *Client) ListArtifactVersions(ctx context.Context, w, id, cursor string, limit int) (knowledge.Page[knowledge.Artifact], error) {
+	var out knowledge.Page[knowledge.Artifact]
+	e := c.do(ctx, "GET", fmt.Sprintf("/v1/artifacts/%s/versions?workspace_id=%s&cursor=%s&limit=%d", url.PathEscape(id), url.QueryEscape(w), url.QueryEscape(cursor), limit), "", nil, &out)
 	return out, e
 }
 func (c *Client) ListArtifacts(ctx context.Context, w, typ, status string, scopes []string) ([]knowledge.Artifact, error) {
@@ -133,6 +166,16 @@ func (c *Client) CreateMemory(ctx context.Context, key string, v knowledge.Memor
 func (c *Client) GetMemory(ctx context.Context, w, id string, version int) (knowledge.Memory, error) {
 	var out knowledge.Memory
 	e := c.do(ctx, "GET", fmt.Sprintf("/v1/memories/%s?workspace_id=%s&version=%d", url.PathEscape(id), url.QueryEscape(w), version), "", nil, &out)
+	return out, e
+}
+func (c *Client) ListMemoryVersions(ctx context.Context, w, id, cursor string, limit int) (knowledge.Page[knowledge.Memory], error) {
+	var out knowledge.Page[knowledge.Memory]
+	e := c.do(ctx, "GET", fmt.Sprintf("/v1/memories/%s/versions?workspace_id=%s&cursor=%s&limit=%d", url.PathEscape(id), url.QueryEscape(w), url.QueryEscape(cursor), limit), "", nil, &out)
+	return out, e
+}
+func (c *Client) ListRelationships(ctx context.Context, w, objectID, cursor string, limit int) (knowledge.Page[knowledge.Relationship], error) {
+	var out knowledge.Page[knowledge.Relationship]
+	e := c.do(ctx, "GET", fmt.Sprintf("/v1/relationships?workspace_id=%s&object_id=%s&cursor=%s&limit=%d", url.QueryEscape(w), url.QueryEscape(objectID), url.QueryEscape(cursor), limit), "", nil, &out)
 	return out, e
 }
 func (c *Client) SearchMemories(ctx context.Context, w, q string, scopes []string) ([]knowledge.Memory, error) {

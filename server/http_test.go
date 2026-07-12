@@ -71,6 +71,40 @@ func TestAPIAuthIdempotencyAndContext(t *testing.T) {
 	if version.Code != 200 || !bytes.Contains(version.Body.Bytes(), []byte(`"version":2`)) {
 		t.Fatalf("colon version=%d %s", version.Code, version.Body.String())
 	}
+	if got := send("GET", "/v1/artifacts/"+artifactEnv.Data.ID+"/versions?limit=1", "", "", true); got.Code != 200 || !bytes.Contains(got.Body.Bytes(), []byte(`"next_cursor"`)) {
+		t.Fatalf("artifact versions=%d %s", got.Code, got.Body.String())
+	}
+	entity := send("POST", "/v1/entities", "entity", `{"scope_id":"`+env.Data.ID+`","type":"repository","display_name":"Demo repository","aliases":["demo"]}`, true)
+	if entity.Code != 201 {
+		t.Fatalf("entity=%d %s", entity.Code, entity.Body.String())
+	}
+	var entityEnv struct {
+		Data knowledge.Entity `json:"data"`
+	}
+	_ = json.Unmarshal(entity.Body.Bytes(), &entityEnv)
+	if got := send("GET", "/v1/entities?type=repository&limit=20", "", "", true); got.Code != 200 || !bytes.Contains(got.Body.Bytes(), []byte(entityEnv.Data.ID)) {
+		t.Fatalf("entities=%d %s", got.Code, got.Body.String())
+	}
+	memory := send("POST", "/v1/memories", "memory", `{"scope_id":"`+env.Data.ID+`","type":"fact","title":"Dashboard fact","content":"The dashboard is embedded","importance":0.7,"confidence":0.9,"confidence_source":"human_confirmed"}`, true)
+	if memory.Code != 201 {
+		t.Fatalf("memory=%d %s", memory.Code, memory.Body.String())
+	}
+	var memoryEnv struct {
+		Data knowledge.Memory `json:"data"`
+	}
+	_ = json.Unmarshal(memory.Body.Bytes(), &memoryEnv)
+	if got := send("POST", "/v1/memories/"+memoryEnv.Data.ID+":version", "memory-v2", `{"content":"The dashboard is securely embedded"}`, true); got.Code != 200 {
+		t.Fatalf("memory version=%d %s", got.Code, got.Body.String())
+	}
+	rel := send("POST", "/v1/relationships", "relationship", `{"scope_id":"`+env.Data.ID+`","from_type":"entity","from_id":"`+entityEnv.Data.ID+`","predicate":"documented_by","to_type":"artifact","to_id":"`+artifactEnv.Data.ID+`","confidence":1}`, true)
+	if rel.Code != 201 {
+		t.Fatalf("relationship=%d %s", rel.Code, rel.Body.String())
+	}
+	for _, path := range []string{"/v1/relationships?object_id=" + entityEnv.Data.ID, "/v1/search?q=dashboard&limit=20", "/v1/status"} {
+		if got := send("GET", path, "", "", true); got.Code != 200 {
+			t.Fatalf("read endpoint %s=%d %s", path, got.Code, got.Body.String())
+		}
+	}
 	if err := store.Ping(context.Background()); err != nil {
 		t.Fatal(err)
 	}
