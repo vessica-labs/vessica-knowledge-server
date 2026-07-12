@@ -105,6 +105,13 @@ func TestAPIAuthIdempotencyAndContext(t *testing.T) {
 			t.Fatalf("read endpoint %s=%d %s", path, got.Code, got.Body.String())
 		}
 	}
+	search := send("GET", "/v1/search?q=dashboard&limit=20", "", "", true)
+	var searchEnv struct {
+		Data knowledge.Page[knowledge.SearchResult] `json:"data"`
+	}
+	if err := json.Unmarshal(search.Body.Bytes(), &searchEnv); err != nil || len(searchEnv.Data.Items) == 0 || searchEnv.Data.Items[0].ObjectType != "memory" {
+		t.Fatalf("search was not globally recency ordered: %s err=%v", search.Body.String(), err)
+	}
 	if err := store.Ping(context.Background()); err != nil {
 		t.Fatal(err)
 	}

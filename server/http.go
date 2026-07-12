@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -168,6 +169,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 			results = append(results, knowledge.SearchResult{ObjectType: "memory", ID: v.ID, ScopeID: v.ScopeID, Subtype: v.Type, Title: v.Title, Summary: truncate(v.Content, 240), State: v.State, UpdatedAt: v.UpdatedAt})
 		}
 	}
+	sort.SliceStable(results, func(i, j int) bool { return results[i].UpdatedAt.After(results[j].UpdatedAt) })
 	respond(w, paginate(results, r), nil, http.StatusOK)
 }
 func truncate(v string, n int) string {
