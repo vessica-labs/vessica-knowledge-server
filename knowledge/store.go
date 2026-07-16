@@ -35,4 +35,5 @@ type Store interface {
 	ClaimEmbedding(context.Context) (*EmbeddingJob, error)
 	FinishEmbedding(context.Context, EmbeddingJob, error) error
 	EmbeddingBacklog(context.Context, string) (int, error)
+	QueueEmbeddings(context.Context, string, string) (int, error)
 }

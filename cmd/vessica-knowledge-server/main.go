@@ -19,9 +19,10 @@ func main() {
 	defer stop()
 	var store knowledge.Store
 	var err error
-	hosted := strings.TrimSpace(os.Getenv("DATABASE_URL")) != ""
-	if url := strings.TrimSpace(os.Getenv("DATABASE_URL")); url != "" {
-		store, err = knowledge.OpenPostgres(url)
+	databaseURL := strings.TrimSpace(os.Getenv("VES_KNOWLEDGE_DATABASE_URL"))
+	hosted := databaseURL != ""
+	if databaseURL != "" {
+		store, err = knowledge.OpenPostgres(databaseURL)
 	} else {
 		path := os.Getenv("KNOWLEDGE_SQLITE_PATH")
 		if path == "" {
@@ -36,9 +37,6 @@ func main() {
 	var embedder knowledge.Embedder
 	if key := os.Getenv("EMBEDDING_API_KEY"); key != "" {
 		embedder = &knowledge.HTTPEmbedder{APIKey: key, BaseURL: os.Getenv("EMBEDDING_BASE_URL"), ModelName: defaultValue(os.Getenv("EMBEDDING_MODEL"), "text-embedding-3-small")}
-	}
-	if hosted && embedder == nil {
-		log.Fatal("EMBEDDING_API_KEY is required when DATABASE_URL configures hosted mode")
 	}
 	if hosted && strings.TrimSpace(os.Getenv("KNOWLEDGE_API_TOKEN")) == "" {
 		log.Fatal("KNOWLEDGE_API_TOKEN is required in hosted mode")

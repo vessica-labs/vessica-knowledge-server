@@ -29,6 +29,15 @@ type Status struct {
 	IndexFresh       bool   `json:"index_fresh"`
 }
 
+type EmbeddingBackfill struct {
+	JobID       string `json:"job_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Mode        string `json:"mode"`
+	Queued      int    `json:"queued"`
+	Backlog     int    `json:"backlog"`
+	Status      string `json:"status"`
+}
+
 type Actor struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`

@@ -39,6 +39,45 @@ func TestPostgresKnowledgeContract(t *testing.T) {
 	})
 }
 
+func TestFullReembeddingExcludesStaleVectorsWhileCatchingUp(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	workspace := NewID("kwsp")
+	service := NewService(store, nil)
+	options := func(key string) WriteOptions {
+		return WriteOptions{WorkspaceID: workspace, IdempotencyKey: key, Actor: Actor{ID: "tester", Type: "human"}, Provenance: Provenance{Source: "test"}}
+	}
+	scope, err := service.CreateScope(ctx, options("scope"), Scope{Type: "repository", Name: "repo", CanonicalKey: "github.com/acme/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory, err := service.CreateMemory(ctx, options("memory"), Memory{ScopeID: scope.ID, Type: "fact", Title: "Architecture", Content: "The API uses Go."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutEmbedding(ctx, workspace, "memory", memory.ID, memory.Version, []float32{1, 0, 0}, "old-provider", "old-model"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetEmbeddingState(ctx, workspace, memory.ID, memory.Version, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.SearchEmbeddings(ctx, workspace, nil, []float32{1, 0, 0}, 10)
+	if err != nil || len(before) != 1 {
+		t.Fatalf("ready vectors=%v err=%v", before, err)
+	}
+	if queued, err := store.QueueEmbeddings(ctx, workspace, "all"); err != nil || queued != 1 {
+		t.Fatalf("queued=%d err=%v", queued, err)
+	}
+	after, err := store.SearchEmbeddings(ctx, workspace, nil, []float32{1, 0, 0}, 10)
+	if err != nil || len(after) != 0 {
+		t.Fatalf("stale vectors remained visible=%v err=%v", after, err)
+	}
+}
+
 func runContract(t *testing.T, open func(*testing.T) Store) {
 	t.Helper()
 	ctx := context.Background()

@@ -25,6 +25,7 @@ tags:
   - {name: Migration, description: Export and import verified workspace snapshots}
 paths:
   /healthz:
+  /admin/v1/embeddings/backfill/{job_id}:
     get:
       security: []
       summary: Check process health
@@ -44,9 +45,34 @@ paths:
       tags: [Context]
       summary: Read retrieval and index status
       operationId: getKnowledgeStatus
-      parameters: [{$ref: '#/components/parameters/WorkspaceID'}]
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/WorkspaceID'}
       responses:
         '200': {description: Retrieval and embedding status, content: {application/json: {schema: {$ref: '#/components/schemas/StatusEnvelope'}}}}
+  /admin/v1/embeddings/backfill:
+    post:
+      tags: [Context]
+      summary: Queue an idempotent embedding backfill for current memories
+      operationId: queueEmbeddingBackfill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                workspace_id: {type: string}
+                mode: {type: string, enum: [missing, all], default: missing}
+      responses:
+        '202': {description: Backfill queued, content: {application/json: {schema: {$ref: '#/components/schemas/EmbeddingBackfillEnvelope'}}}}
+    get:
+      tags: [Context]
+      summary: Read embedding backfill backlog
+      operationId: getEmbeddingBackfill
+      parameters: [{$ref: '#/components/parameters/WorkspaceID'}]
+      responses:
+        '200': {description: Backfill status, content: {application/json: {schema: {$ref: '#/components/schemas/EmbeddingBackfillEnvelope'}}}}
   /v1/search:
     get:
       tags: [Context]
@@ -335,6 +361,22 @@ components:
       type: object
       required: [schema, ok, data]
       properties: {schema: {type: string}, ok: {type: boolean}, data: {type: object}}
+    EmbeddingBackfillEnvelope:
+      type: object
+      required: [schema, ok, data]
+      properties:
+        schema: {type: string}
+        ok: {type: boolean}
+        data:
+          type: object
+          required: [job_id, workspace_id, backlog, status]
+          properties:
+            job_id: {type: string}
+            workspace_id: {type: string}
+            mode: {type: string, enum: [missing, all]}
+            queued: {type: integer}
+            backlog: {type: integer}
+            status: {type: string, enum: [catching_up, completed]}
     SearchPageEnvelope:
       type: object
       properties: {schema: {type: string}, ok: {type: boolean}, data: {$ref: '#/components/schemas/Page'}}

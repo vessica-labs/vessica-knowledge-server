@@ -7,22 +7,25 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: pgvector/pgvector:pg17
+        image: pgvector/pgvector:pg17@sha256:d2ef61f42ef767baa5a1475393303cc235bcd92febd9d7014eddb48b41f3bad0
         env:
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: knowledge
+          POSTGRES_USER: vessica_knowledge_user
+          POSTGRES_PASSWORD: vessica_knowledge_dev
+          POSTGRES_DB: vessica_knowledge
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U postgres -d knowledge"
+          --health-cmd "pg_isready -U vessica_knowledge_user -d vessica_knowledge"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
     env:
-      TEST_POSTGRES_URL: postgres://postgres:test@127.0.0.1:5432/knowledge?sslmode=disable
+      TEST_POSTGRES_URL: postgres://vessica_knowledge_user:vessica_knowledge_dev@127.0.0.1:5432/vessica_knowledge?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: "1.25.x" }
+      - name: Initialize knowledge database extension
+        run: psql "$TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
       - run: go test ./...
       - run: go vet ./...
   image:

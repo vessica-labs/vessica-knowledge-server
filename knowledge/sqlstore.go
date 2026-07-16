@@ -94,22 +94,64 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_scope ON artifacts(workspace_id,scope_i
 CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(workspace_id,scope_id,type,state);
 `
 
+const knowledgeMigrationTable = `
+CREATE TABLE IF NOT EXISTS knowledge_schema_migrations(
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);`
+
+const latestKnowledgeSchemaVersion = 1
+
 func (s *SQLStore) migrate(ctx context.Context) error {
 	if s.dialect == "postgres" {
-		_, _ = s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`)
+		var vectorInstalled bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='vector')`).Scan(&vectorInstalled); err != nil {
+			return fmt.Errorf("inspect pgvector extension: %w", err)
+		}
+		if !vectorInstalled {
+			return fmt.Errorf("pgvector extension is not installed in the knowledge database")
+		}
 	}
-	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if s.dialect == "postgres" {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('vessica-knowledge-schema'))`); err != nil {
+			return fmt.Errorf("lock knowledge migrations: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, knowledgeMigrationTable); err != nil {
+		return fmt.Errorf("create knowledge migration history: %w", err)
+	}
+	var version int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM knowledge_schema_migrations`).Scan(&version); err != nil {
+		return fmt.Errorf("read knowledge migration version: %w", err)
+	}
+	if version > latestKnowledgeSchemaVersion {
+		return fmt.Errorf("knowledge schema version %d is newer than supported version %d", version, latestKnowledgeSchemaVersion)
+	}
+	if version == latestKnowledgeSchemaVersion {
+		return tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, schema); err != nil {
 		return err
 	}
 	if s.dialect == "postgres" {
-		_, err := s.db.ExecContext(ctx, `ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS embedding vector`)
-		return err
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS embedding vector`); err != nil {
+			return err
+		}
 	}
 	if s.dialect == "sqlite" {
-		_, err := s.db.ExecContext(ctx, `CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(workspace_id UNINDEXED,id UNINDEXED,title,content); CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(workspace_id UNINDEXED,id UNINDEXED,display_name,aliases);`)
-		return err
+		if _, err := tx.ExecContext(ctx, `CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(workspace_id UNINDEXED,id UNINDEXED,title,content); CREATE VIRTUAL TABLE IF NOT EXISTS entity_fts USING fts5(workspace_id UNINDEXED,id UNINDEXED,display_name,aliases);`); err != nil {
+			return err
+		}
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO knowledge_schema_migrations(version,applied_at) VALUES(?,?)`), latestKnowledgeSchemaVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record knowledge migration: %w", err)
+	}
+	return tx.Commit()
 }
 
 func js(v any) string          { b, _ := json.Marshal(v); return string(b) }
@@ -435,6 +477,70 @@ func (s *SQLStore) EmbeddingBacklog(ctx context.Context, workspace string) (int,
 	err := s.db.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM embedding_jobs WHERE workspace_id=? AND status IN ('pending','retry','running')`), workspace).Scan(&n)
 	return n, err
 }
+
+// QueueEmbeddings schedules current, active memory versions for asynchronous
+// embedding. The operation is intentionally provider agnostic: workers always
+// use the currently configured embedder, and PutEmbedding replaces a prior
+// provider/model representation for the same memory version.
+func (s *SQLStore) QueueEmbeddings(ctx context.Context, workspace, mode string) (int, error) {
+	if mode == "" {
+		mode = "missing"
+	}
+	if mode != "missing" && mode != "all" {
+		return 0, Invalid("embedding backfill mode must be missing or all")
+	}
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT m.id,m.version,m.title,m.content,m.embedding_state,COALESCE(e.object_id,'')
+		FROM memories m
+		JOIN memory_current c ON c.workspace_id=m.workspace_id AND c.id=m.id AND c.version=m.version
+		LEFT JOIN embeddings e ON e.workspace_id=m.workspace_id AND e.object_type='memory' AND e.object_id=m.id AND e.version=m.version
+		WHERE m.workspace_id=? AND m.state NOT IN ('archived','tombstoned')
+		ORDER BY m.updated_at,m.id`), workspace)
+	if err != nil {
+		return 0, err
+	}
+	type candidate struct {
+		id, title, content, state, embedded string
+		version                             int
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var v candidate
+		if err := rows.Scan(&v.id, &v.version, &v.title, &v.content, &v.state, &v.embedded); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		if mode == "all" || v.embedded == "" || v.state == "not_configured" || v.state == "failed" {
+			candidates = append(candidates, v)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, v := range candidates {
+		if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO embedding_jobs(workspace_id,memory_id,version,text,status,attempts,available_at,last_error,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(workspace_id,memory_id,version) DO UPDATE SET text=excluded.text,status='pending',attempts=0,available_at=excluded.available_at,last_error=NULL,updated_at=excluded.updated_at`),
+			workspace, v.id, v.version, v.title+"\n"+v.content, "pending", 0, now, nil, now); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, s.q(`UPDATE memories SET embedding_state='pending' WHERE workspace_id=? AND id=? AND version=?`), workspace, v.id, v.version); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(candidates), nil
+}
 func (s *SQLStore) GetMemory(ctx context.Context, w, id string, version int) (Memory, error) {
 	args := []any{w, id}
 	q := `SELECT m.id,m.workspace_id,m.scope_id,m.version,m.type,COALESCE(m.subject,''),COALESCE(m.predicate,''),COALESCE(m.object,''),m.title,m.content,m.importance,m.confidence,m.confidence_source,COALESCE(m.valid_from,''),COALESCE(m.valid_until,''),m.state,m.embedding_state,m.metadata_json,m.provenance_json,m.created_at,m.updated_at FROM memories m`
@@ -607,7 +713,7 @@ func (s *SQLStore) SearchEmbeddings(ctx context.Context, w string, scopes []stri
 		if limit <= 0 {
 			limit = 200
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT e.object_id,1-(e.embedding <=> $1::vector) FROM embeddings e JOIN memories m ON m.workspace_id=e.workspace_id AND m.id=e.object_id AND m.version=e.version WHERE e.workspace_id=$2 AND e.object_type='memory' AND e.embedding IS NOT NULL ORDER BY e.embedding <=> $1::vector LIMIT $3`, vectorText(query), w, limit)
+		rows, err := s.db.QueryContext(ctx, `SELECT e.object_id,1-(e.embedding <=> $1::vector) FROM embeddings e JOIN memories m ON m.workspace_id=e.workspace_id AND m.id=e.object_id AND m.version=e.version WHERE e.workspace_id=$2 AND e.object_type='memory' AND e.embedding IS NOT NULL AND m.embedding_state='ready' ORDER BY e.embedding <=> $1::vector LIMIT $3`, vectorText(query), w, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -623,7 +729,7 @@ func (s *SQLStore) SearchEmbeddings(ctx context.Context, w string, scopes []stri
 		}
 		return out, rows.Err()
 	}
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT object_id,vector_json FROM embeddings WHERE workspace_id=? AND object_type='memory'`), w)
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT e.object_id,e.vector_json FROM embeddings e JOIN memories m ON m.workspace_id=e.workspace_id AND m.id=e.object_id AND m.version=e.version WHERE e.workspace_id=? AND e.object_type='memory' AND m.embedding_state='ready'`), w)
 	if err != nil {
 		return nil, err
 	}

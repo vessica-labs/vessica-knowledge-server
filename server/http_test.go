@@ -89,6 +89,9 @@ func TestAPIAuthIdempotencyAndContext(t *testing.T) {
 	if memory.Code != 201 {
 		t.Fatalf("memory=%d %s", memory.Code, memory.Body.String())
 	}
+	if !bytes.Contains(memory.Body.Bytes(), []byte(`"embedding_state":"not_configured"`)) {
+		t.Fatalf("lexical memory state=%s", memory.Body.String())
+	}
 	var memoryEnv struct {
 		Data knowledge.Memory `json:"data"`
 	}
@@ -117,6 +120,26 @@ func TestAPIAuthIdempotencyAndContext(t *testing.T) {
 	}
 	if got := send("POST", "/v1/exports", "", `{"workspace_id":"kwsp_test"}`, true); got.Code != 401 {
 		t.Fatalf("ordinary token exported=%d %s", got.Code, got.Body.String())
+	}
+	backfillReq := httptest.NewRequest("POST", "/admin/v1/embeddings/backfill", bytes.NewBufferString(`{"mode":"missing"}`))
+	backfillReq.Header.Set("Authorization", "Bearer admin-secret")
+	backfill := httptest.NewRecorder()
+	api.ServeHTTP(backfill, backfillReq)
+	if backfill.Code != 202 || !bytes.Contains(backfill.Body.Bytes(), []byte(`"status":"catching_up"`)) {
+		t.Fatalf("backfill=%d %s", backfill.Code, backfill.Body.String())
+	}
+	var backfillEnvelope struct {
+		Data knowledge.EmbeddingBackfill `json:"data"`
+	}
+	if err := json.Unmarshal(backfill.Body.Bytes(), &backfillEnvelope); err != nil || backfillEnvelope.Data.JobID == "" {
+		t.Fatalf("backfill job=%s err=%v", backfill.Body.String(), err)
+	}
+	statusReq := httptest.NewRequest("GET", "/admin/v1/embeddings/backfill/"+backfillEnvelope.Data.JobID, nil)
+	statusReq.Header.Set("Authorization", "Bearer admin-secret")
+	statusRec := httptest.NewRecorder()
+	api.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != 200 || !bytes.Contains(statusRec.Body.Bytes(), []byte(`"job_id":"`+backfillEnvelope.Data.JobID+`"`)) {
+		t.Fatalf("backfill status=%d %s", statusRec.Code, statusRec.Body.String())
 	}
 	req := httptest.NewRequest("POST", "/v1/exports", bytes.NewBufferString(`{"workspace_id":"kwsp_test"}`))
 	req.Header.Set("Authorization", "Bearer admin-secret")

@@ -41,6 +41,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /healthz", s.health)
 	m.HandleFunc("GET /readyz", s.ready)
 	m.HandleFunc("GET /v1/status", s.auth(s.status))
+	m.HandleFunc("POST /admin/v1/embeddings/backfill", s.authWith(s.exportCredential(), s.embeddingBackfill))
+	m.HandleFunc("GET /admin/v1/embeddings/backfill/{job_id}", s.authWith(s.exportCredential(), s.embeddingBackfillStatus))
 	m.HandleFunc("GET /v1/search", s.auth(s.search))
 	m.HandleFunc("POST /v1/context", s.auth(s.context))
 	m.HandleFunc("POST /v1/scopes", s.auth(s.createScope))
@@ -80,6 +82,55 @@ func (s *Server) Handler() http.Handler {
 		}
 		m.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) embeddingBackfill(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		WorkspaceID string `json:"workspace_id"`
+		Mode        string `json:"mode"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	if input.WorkspaceID == "" {
+		input.WorkspaceID = s.DefaultWorkspace
+	}
+	if s.DefaultWorkspace != "" && input.WorkspaceID != s.DefaultWorkspace {
+		failure(w, &knowledge.Error{Code: "forbidden_workspace", Message: "token is not scoped to this workspace", Status: 403})
+		return
+	}
+	queued, err := s.Service.Store.QueueEmbeddings(r.Context(), input.WorkspaceID, input.Mode)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	backlog, err := s.Service.Store.EmbeddingBacklog(r.Context(), input.WorkspaceID)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	mode := input.Mode
+	if mode == "" {
+		mode = "missing"
+	}
+	respond(w, knowledge.EmbeddingBackfill{JobID: "emb_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 36), WorkspaceID: input.WorkspaceID, Mode: mode, Queued: queued, Backlog: backlog, Status: backfillStatus(backlog)}, nil, http.StatusAccepted)
+}
+
+func (s *Server) embeddingBackfillStatus(w http.ResponseWriter, r *http.Request) {
+	ws := workspace(r, s.DefaultWorkspace)
+	backlog, err := s.Service.Store.EmbeddingBacklog(r.Context(), ws)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	respond(w, knowledge.EmbeddingBackfill{JobID: r.PathValue("job_id"), WorkspaceID: ws, Backlog: backlog, Status: backfillStatus(backlog)}, nil, http.StatusOK)
+}
+
+func backfillStatus(backlog int) string {
+	if backlog > 0 {
+		return "catching_up"
+	}
+	return "completed"
 }
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	backlog, err := s.Service.Store.EmbeddingBacklog(r.Context(), workspace(r, s.DefaultWorkspace))
