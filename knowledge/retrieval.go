@@ -10,6 +10,7 @@ import (
 const (
 	retrievalCandidateLimit = 50
 	rerankCandidateLimit    = 12
+	retrievalEmbedTimeout   = 400 * time.Millisecond
 )
 
 // RetrieveMemories is the shared retrieval-v2 path used by the narrow memory
@@ -64,7 +65,10 @@ func (s *Service) RetrieveMemories(ctx context.Context, request MemoryRetrievalR
 	mode := "lexical"
 	model := ""
 	if s.Embedder != nil && request.Query != "" {
-		if vector, embedErr := s.Embedder.Embed(ctx, request.Query); embedErr == nil {
+		embedCtx, cancel := context.WithTimeout(ctx, retrievalEmbedTimeout)
+		vector, embedErr := s.Embedder.Embed(embedCtx, request.Query)
+		cancel()
+		if embedErr == nil {
 			if scores, searchErr := s.Store.SearchEmbeddings(ctx, request.WorkspaceID, request.ScopeIDs, vector, retrievalCandidateLimit); searchErr == nil {
 				semanticScores = scores
 				mode = "semantic_hybrid"

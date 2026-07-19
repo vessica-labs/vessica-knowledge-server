@@ -16,6 +16,15 @@ func (constantEmbedder) Embed(context.Context, string) ([]float32, error) {
 	return []float32{1, 0, 0}, nil
 }
 
+type slowEmbedder struct{}
+
+func (slowEmbedder) Provider() string { return "fake" }
+func (slowEmbedder) Model() string    { return "slow-v1" }
+func (slowEmbedder) Embed(ctx context.Context, _ string) ([]float32, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 type reverseReranker struct{ invalid bool }
 
 func (reverseReranker) Model() string { return "fake-reranker" }
@@ -71,6 +80,29 @@ func TestRetrieveMemoriesFiltersScopeLifecycleVersionAndValidity(t *testing.T) {
 	}
 	if result.RetrievalMode != "semantic_hybrid" || result.Ranking.Version != "v2" {
 		t.Fatalf("retrieval metadata=%#v", result)
+	}
+}
+
+func TestRetrieveMemoriesBoundsQueryEmbeddingLatencyAndFallsBack(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	service := NewService(store, slowEmbedder{})
+	workspace := "kwsp_slow_embedding"
+	options := WriteOptions{WorkspaceID: workspace, IdempotencyKey: "scope", Actor: Actor{ID: "tester", Type: "human"}, Provenance: Provenance{Source: "test"}}
+	scope, _ := service.CreateScope(ctx, options, Scope{Type: "repository", Name: "A", CanonicalKey: "a"})
+	options.IdempotencyKey = "memory"
+	memory, _ := service.CreateMemory(ctx, options, Memory{ScopeID: scope.ID, Type: "decision", Subject: "Project Alder", Title: "Project Alder access", Content: "Invited reviewers only"})
+	started := time.Now()
+	result, err := service.RetrieveMemories(ctx, MemoryRetrievalRequest{WorkspaceID: workspace, Query: "Project Alder access", ScopeIDs: []string{scope.ID}, Rerank: "never"})
+	if err != nil || result.RetrievalMode != "lexical" || len(result.Results) != 1 || result.Results[0].Memory.ID != memory.ID {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if elapsed := time.Since(started); elapsed > 700*time.Millisecond {
+		t.Fatalf("embedding fallback took %s", elapsed)
 	}
 }
 
