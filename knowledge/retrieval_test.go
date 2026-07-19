@@ -127,7 +127,7 @@ func TestRetrieveMemoriesReportsAmbiguityAndHonorsExplicitEntity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ambiguous, err := service.RetrieveMemories(ctx, MemoryRetrievalRequest{WorkspaceID: workspace, Query: "synthetic persona", ScopeIDs: []string{scope.ID}, Rerank: "never"})
+	ambiguous, err := service.RetrieveMemories(ctx, MemoryRetrievalRequest{WorkspaceID: workspace, Query: "synthetic persona scheduling policy", ScopeIDs: []string{scope.ID}, Rerank: "never"})
 	if err != nil || ambiguous.Ambiguity != "ambiguous_subject" {
 		t.Fatalf("ambiguous=%#v err=%v", ambiguous, err)
 	}

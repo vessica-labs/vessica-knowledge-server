@@ -145,7 +145,7 @@ func (s *Service) RetrieveMemories(ctx context.Context, request MemoryRetrievalR
 	if backlog, backlogErr := s.Store.EmbeddingBacklog(ctx, request.WorkspaceID); backlogErr == nil {
 		response.IndexFresh = backlog == 0
 	}
-	if len(request.EntityIDs) == 0 && len(entities) > 1 {
+	if len(request.EntityIDs) == 0 && (len(entities) > 1 || ambiguousCandidateSubjects(request.Query, ranked)) {
 		response.Ambiguity = "ambiguous_subject"
 	}
 	if response.Ambiguity == "" {
@@ -270,4 +270,23 @@ func memoryMentionsEntity(memory Memory, entities []Entity) bool {
 		}
 	}
 	return false
+}
+
+func ambiguousCandidateSubjects(query string, ranked []RankedMemory) bool {
+	query = strings.ToLower(query)
+	subjects := map[string]bool{}
+	for _, candidate := range ranked {
+		if candidate.Memory.Type == "episode" {
+			continue
+		}
+		subject := strings.TrimSpace(strings.ToLower(candidate.Memory.Subject))
+		if subject == "" {
+			continue
+		}
+		if strings.Contains(query, subject) {
+			return false
+		}
+		subjects[subject] = true
+	}
+	return len(subjects) > 1
 }
