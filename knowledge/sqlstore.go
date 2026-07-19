@@ -556,6 +556,32 @@ func (s *SQLStore) GetMemory(ctx context.Context, w, id string, version int) (Me
 	}
 	return scanMemory(s.db.QueryRowContext(ctx, s.q(q), args...))
 }
+
+func (s *SQLStore) GetCurrentMemories(ctx context.Context, w string, ids []string) ([]Memory, error) {
+	if len(ids) == 0 {
+		return []Memory{}, nil
+	}
+	marks := make([]string, len(ids))
+	args := []any{w}
+	for index, id := range ids {
+		marks[index] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT m.id,m.workspace_id,m.scope_id,m.version,m.type,COALESCE(m.subject,''),COALESCE(m.predicate,''),COALESCE(m.object,''),m.title,m.content,m.importance,m.confidence,m.confidence_source,COALESCE(m.valid_from,''),COALESCE(m.valid_until,''),m.state,m.embedding_state,m.metadata_json,m.provenance_json,m.created_at,m.updated_at FROM memories m JOIN memory_current c ON c.workspace_id=m.workspace_id AND c.id=m.id AND c.version=m.version WHERE m.workspace_id=? AND m.id IN (`+strings.Join(marks, ",")+`)`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Memory, 0, len(ids))
+	for rows.Next() {
+		memory, scanErr := scanMemory(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, memory)
+	}
+	return out, rows.Err()
+}
 func (s *SQLStore) ListMemoryVersions(ctx context.Context, w, id string) ([]Memory, error) {
 	rows, err := s.db.QueryContext(ctx, s.q(`SELECT m.id,m.workspace_id,m.scope_id,m.version,m.type,COALESCE(m.subject,''),COALESCE(m.predicate,''),COALESCE(m.object,''),m.title,m.content,m.importance,m.confidence,m.confidence_source,COALESCE(m.valid_from,''),COALESCE(m.valid_until,''),m.state,m.embedding_state,m.metadata_json,m.provenance_json,m.created_at,m.updated_at FROM memories m WHERE m.workspace_id=? AND m.id=? ORDER BY m.version DESC`), w, id)
 	if err != nil {
@@ -764,6 +790,45 @@ func (s *SQLStore) ListRelationships(ctx context.Context, w, objectID string) ([
 		fromjs(p, &v.Provenance)
 		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, c)
 		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLStore) RelatedObjectIDs(ctx context.Context, w string, entityIDs []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(entityIDs) == 0 {
+		return out, nil
+	}
+	marks := make([]string, len(entityIDs))
+	args := []any{w}
+	for index, id := range entityIDs {
+		marks[index] = "?"
+		args = append(args, id)
+	}
+	for _, id := range entityIDs {
+		args = append(args, id)
+	}
+	statement := `SELECT r.from_id,r.to_id FROM relationships r JOIN relationship_current c ON c.workspace_id=r.workspace_id AND c.id=r.id AND c.version=r.version WHERE r.workspace_id=? AND r.state='active' AND (r.from_id IN (` + strings.Join(marks, ",") + `) OR r.to_id IN (` + strings.Join(marks, ",") + `))`
+	rows, err := s.db.QueryContext(ctx, s.q(statement), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entities := map[string]bool{}
+	for _, id := range entityIDs {
+		entities[id] = true
+	}
+	for rows.Next() {
+		var fromID, toID string
+		if err := rows.Scan(&fromID, &toID); err != nil {
+			return nil, err
+		}
+		if !entities[fromID] {
+			out[fromID] = true
+		}
+		if !entities[toID] {
+			out[toID] = true
+		}
 	}
 	return out, rows.Err()
 }

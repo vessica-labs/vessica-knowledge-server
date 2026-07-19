@@ -96,16 +96,27 @@ func (s *Service) RetrieveMemories(ctx context.Context, request MemoryRetrievalR
 		return semanticScores[semanticIDs[i]] > semanticScores[semanticIDs[j]]
 	})
 	semanticRank := map[string]int{}
+	missingSemanticIDs := make([]string, 0, len(semanticIDs))
 	for index, id := range semanticIDs {
 		semanticRank[id] = index + 1
 		if _, ok := candidates[id]; ok {
 			continue
 		}
-		memory, getErr := s.Store.GetMemory(ctx, request.WorkspaceID, id, 0)
-		if getErr == nil && retrievalEligible(memory, request.ScopeIDs, time.Now()) {
-			candidates[id] = memory
+		missingSemanticIDs = append(missingSemanticIDs, id)
+	}
+	if semanticMemories, getErr := s.Store.GetCurrentMemories(ctx, request.WorkspaceID, missingSemanticIDs); getErr == nil {
+		for _, memory := range semanticMemories {
+			if retrievalEligible(memory, request.ScopeIDs, time.Now()) {
+				candidates[memory.ID] = memory
+			}
 		}
 	}
+	entityIDs := make([]string, 0, len(entitySet))
+	for id := range entitySet {
+		entityIDs = append(entityIDs, id)
+	}
+	entityRelated, _ := s.Store.RelatedObjectIDs(ctx, request.WorkspaceID, entityIDs)
+
 	canonicalSubject := canonicalCandidateSubject(request.Query, candidates)
 
 	ranked := make([]RankedMemory, 0, len(candidates))
@@ -113,7 +124,7 @@ func (s *Service) RetrieveMemories(ctx context.Context, request MemoryRetrievalR
 		if canonicalSubject != "" && !strings.EqualFold(strings.TrimSpace(memory.Subject), canonicalSubject) {
 			continue
 		}
-		entityMatch := s.relatedToAny(ctx, request.WorkspaceID, memory.ID, entitySet) || memoryMentionsEntity(memory, entities)
+		entityMatch := entityRelated[memory.ID] || memoryMentionsEntity(memory, entities)
 		if enforceEntity && !entityMatch {
 			continue
 		}
