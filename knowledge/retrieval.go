@@ -102,9 +102,13 @@ func (s *Service) RetrieveMemories(ctx context.Context, request MemoryRetrievalR
 			candidates[id] = memory
 		}
 	}
+	canonicalSubject := canonicalCandidateSubject(request.Query, candidates)
 
 	ranked := make([]RankedMemory, 0, len(candidates))
 	for _, memory := range candidates {
+		if canonicalSubject != "" && !strings.EqualFold(strings.TrimSpace(memory.Subject), canonicalSubject) {
+			continue
+		}
 		entityMatch := s.relatedToAny(ctx, request.WorkspaceID, memory.ID, entitySet) || memoryMentionsEntity(memory, entities)
 		if enforceEntity && !entityMatch {
 			continue
@@ -289,4 +293,22 @@ func ambiguousCandidateSubjects(query string, ranked []RankedMemory) bool {
 		subjects[subject] = true
 	}
 	return len(subjects) > 1
+}
+
+func canonicalCandidateSubject(query string, candidates map[string]Memory) string {
+	query = strings.ToLower(query)
+	matches := map[string]string{}
+	for _, candidate := range candidates {
+		subject := strings.TrimSpace(candidate.Subject)
+		if subject != "" && strings.Contains(query, strings.ToLower(subject)) {
+			matches[strings.ToLower(subject)] = subject
+		}
+	}
+	if len(matches) != 1 {
+		return ""
+	}
+	for _, subject := range matches {
+		return subject
+	}
+	return ""
 }

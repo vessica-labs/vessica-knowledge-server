@@ -165,3 +165,24 @@ func TestContextReservesBudgetForRelevantDurableMemory(t *testing.T) {
 		t.Fatalf("irrelevant artifacts were admitted: artifacts=%d omissions=%d", len(result.Artifacts), len(result.Omissions))
 	}
 }
+
+func TestRetrieveMemoriesConstrainsExactCanonicalSubject(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	service := NewService(store, nil)
+	workspace := "kwsp_subject"
+	options := func(key string) WriteOptions {
+		return WriteOptions{WorkspaceID: workspace, IdempotencyKey: key, Actor: Actor{ID: "tester", Type: "human"}, Provenance: Provenance{Source: "test"}}
+	}
+	scope, _ := service.CreateScope(ctx, options("scope"), Scope{Type: "repository", Name: "A", CanonicalKey: "a"})
+	alder, _ := service.CreateMemory(ctx, options("alder"), Memory{ScopeID: scope.ID, Type: "decision", Subject: "Project Alder", Title: "Project Alder preview access", Content: "Invited reviewers only"})
+	_, _ = service.CreateMemory(ctx, options("juniper"), Memory{ScopeID: scope.ID, Type: "decision", Subject: "Project Juniper", Title: "Project Juniper preview access", Content: "Invited commenters only"})
+	result, err := service.RetrieveMemories(ctx, MemoryRetrievalRequest{WorkspaceID: workspace, Query: "Project Alder preview access", ScopeIDs: []string{scope.ID}, Rerank: "never"})
+	if err != nil || len(result.Results) != 1 || result.Results[0].Memory.ID != alder.ID {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
