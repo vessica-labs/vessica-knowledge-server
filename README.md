@@ -8,8 +8,9 @@ The repository publishes an embeddable Go core for explicit local development an
 
 - Append-only events and replayable projections.
 - Immutable entity, artifact, memory, and relationship assertions with provenance.
+- Retrieval v2 with scope, current-version, active-state, and temporal filtering before candidate limits; weighted FTS and reciprocal-rank fusion are deterministic across callers.
 - SQLite FTS5/BM25 solo retrieval without an external key.
-- Postgres lexical retrieval with no provider key, plus optional semantic-hybrid retrieval and durable embedding jobs.
+- Postgres weighted full-text retrieval with no provider key, plus optional semantic-hybrid retrieval and durable embedding jobs.
 - Versioned ranking metadata, per-memory component scores, and artifact selection reasons.
 - Authenticated workspace-scoped HTTP endpoints and separate snapshot authorization.
 - Checksummed idempotent export/import used by verified `ves railway up` promotion.
@@ -27,6 +28,7 @@ Environment variables:
 - `KNOWLEDGE_EXPORT_TOKEN`: separately scoped token for snapshot export/import.
 - `KNOWLEDGE_WORKSPACE_ID`: default workspace.
 - `EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`: optional user-funded embedding provider. When absent, hosted lexical retrieval is healthy.
+- `RERANK_ENABLED`, `RERANK_API_KEY`, `RERANK_BASE_URL`, `RERANK_MODEL`: separately controlled conditional Responses API reranking. It is disabled unless both `RERANK_ENABLED=true` and a key are present; the default model is `gpt-5.6-luna`.
 - `PORT`: listen port, default `8080`.
 
 The complete versioned HTTP contract is documented in [`openapi.yaml`](openapi.yaml). Every write uses an idempotency key, actor, provenance, and a bearer token constrained to `KNOWLEDGE_WORKSPACE_ID`. `/readyz` reports database, migration, embedding-worker, and index readiness separately.

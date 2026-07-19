@@ -201,7 +201,7 @@ func TestEmbeddingWorkerAndHybridContext(t *testing.T) {
 	if err != nil || result.RetrievalMode != "semantic_hybrid" || result.EmbeddingModel != "fake-v1" {
 		t.Fatalf("context=%#v err=%v", result, err)
 	}
-	if result.Ranking.Version != "v1" || result.Ranking.MemoryWeights["semantic"] == 0 {
+	if result.Ranking.Version != "v2" || result.Ranking.MemoryWeights["semantic_rrf"] == 0 {
 		t.Fatalf("ranking=%#v", result.Ranking)
 	}
 	foundSemanticOnly := false

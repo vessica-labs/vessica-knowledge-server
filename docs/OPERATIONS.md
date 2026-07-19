@@ -30,6 +30,10 @@ Deploy the immutable digest resolved from the release tag. `ves up` performs thi
 | `EMBEDDING_API_KEY` | Optional | User-funded embedding provider credential; omit for lexical retrieval |
 | `EMBEDDING_BASE_URL` | No | OpenAI-compatible embeddings endpoint |
 | `EMBEDDING_MODEL` | No | Defaults to `text-embedding-3-small` |
+| `RERANK_ENABLED` | No | Must be `true` to allow conditional reranking; defaults disabled |
+| `RERANK_API_KEY` | Optional | Separately managed Responses API credential; required only when reranking is enabled |
+| `RERANK_BASE_URL` | No | Optional OpenAI-compatible Responses API endpoint |
+| `RERANK_MODEL` | No | Defaults to `gpt-5.6-luna` |
 | `PORT` | No | HTTP port, default `8080` |
 | `KNOWLEDGE_SQLITE_PATH` | Solo server debugging | SQLite file when `VES_KNOWLEDGE_DATABASE_URL` is absent |
 
@@ -62,12 +66,18 @@ The service rejects workspace IDs other than `KNOWLEDGE_WORKSPACE_ID`. Export an
 
 ## Retrieval
 
-Context responses expose `ranking.version`, the component weights, deterministic artifact policy, context order, and instruction override rule. Every ranked memory includes raw component scores. Every selected artifact includes selection reasons.
+`POST /v1/memories:retrieve` is the shared retrieval-v2 API. It returns ranked memories plus component explanations, retrieval mode, index freshness, ambiguity state, and reranker metadata. `GET /v1/memories?q=` remains the compatibility and administrative lexical-search endpoint.
+
+Retrieval v2 obtains at most 50 lexical and 50 semantic candidates after workspace, scope, current-version, active-state, and temporal filters. Weighted reciprocal-rank fusion combines the sources; entity and scope specificity are strong signals, while importance and confidence are tie-breakers. Episode recency never displaces durable instructions or decisions. Ordering ends with version, update time, and ID for reproducibility.
+
+Context responses expose `ranking.version`, component weights, deterministic artifact policy, context order, omissions, and the instruction override rule. Explicit artifact IDs and versions are authoritative. Ordinary artifacts must be lexically or entity relevant; unselected artifacts and episodes have separate type budgets so durable memory retains context capacity.
 
 - Solo mode reports `retrieval_mode: lexical`.
 - Hosted mode reports `retrieval_mode: lexical` and `embedding_state: not_configured` when no key is supplied. This is healthy.
 - Hosted mode reports `retrieval_mode: semantic_hybrid` when an embedder is configured; lexical retrieval remains available while a backfill catches up.
 - Pending or failed embeddings do not hide memory from lexical retrieval.
+
+Conditional reranking receives at most 12 candidates that already passed authorization and lifecycle filters. It can reorder or reject IDs but cannot add IDs. It is skipped for fewer than three candidates and confident exact matches, times out after 2.5 seconds, and falls back to deterministic hybrid order on all provider or schema failures. Logs and errors must contain metadata only, never memory text, raw model output, or credentials.
 
 ## Embedding jobs
 

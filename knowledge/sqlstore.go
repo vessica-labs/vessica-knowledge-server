@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
@@ -100,7 +101,7 @@ CREATE TABLE IF NOT EXISTS knowledge_schema_migrations(
   applied_at TEXT NOT NULL
 );`
 
-const latestKnowledgeSchemaVersion = 1
+const latestKnowledgeSchemaVersion = 2
 
 func (s *SQLStore) migrate(ctx context.Context) error {
 	if s.dialect == "postgres" {
@@ -140,6 +141,9 @@ func (s *SQLStore) migrate(ctx context.Context) error {
 	}
 	if s.dialect == "postgres" {
 		if _, err := tx.ExecContext(ctx, `ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS embedding vector`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_memories_search_v2 ON memories USING GIN ((setweight(to_tsvector('simple', COALESCE(title,'')), 'A') || setweight(to_tsvector('simple', COALESCE(subject,'') || ' ' || COALESCE(predicate,'') || ' ' || COALESCE(object,'')), 'B') || setweight(to_tsvector('simple', COALESCE(content,'')), 'C')))`); err != nil {
 			return err
 		}
 	}
@@ -428,7 +432,7 @@ func (s *SQLStore) PutMemory(ctx context.Context, v Memory, e Event) (Memory, er
 	})
 	if err == nil && s.dialect == "sqlite" {
 		_, _ = s.db.ExecContext(ctx, `DELETE FROM memory_fts WHERE workspace_id=? AND id=?`, v.WorkspaceID, v.ID)
-		_, _ = s.db.ExecContext(ctx, `INSERT INTO memory_fts(workspace_id,id,title,content) VALUES(?,?,?,?)`, v.WorkspaceID, v.ID, v.Title, v.Content)
+		_, _ = s.db.ExecContext(ctx, `INSERT INTO memory_fts(workspace_id,id,title,content) VALUES(?,?,?,?)`, v.WorkspaceID, v.ID, strings.Join([]string{v.Subject, v.Predicate, v.Object, v.Title}, " "), v.Content)
 	}
 	return v, err
 }
@@ -583,29 +587,30 @@ func scanMemory(row scanner) (Memory, error) {
 	}
 	return v, err
 }
+
+// SearchMemories preserves the v1 administrative lexical behavior used by
+// GET /v1/memories. Retrieval-v2 callers use SearchMemoryCandidates instead.
 func (s *SQLStore) SearchMemories(ctx context.Context, w string, scopes []string, query string, limit int) ([]Memory, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	term := strings.TrimSpace(query)
 	if s.dialect == "sqlite" && term != "" {
-		// Quote user terms so FTS operators are never interpreted from prompts.
 		parts := strings.Fields(term)
-		for i := range parts {
-			parts[i] = `"` + strings.ReplaceAll(parts[i], `"`, `""`) + `"*`
+		for index := range parts {
+			parts[index] = `"` + strings.ReplaceAll(parts[index], `"`, `""`) + `"*`
 		}
-		match := strings.Join(parts, " OR ")
-		rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.workspace_id,m.scope_id,m.version,m.type,COALESCE(m.subject,''),COALESCE(m.predicate,''),COALESCE(m.object,''),m.title,m.content,m.importance,m.confidence,m.confidence_source,COALESCE(m.valid_from,''),COALESCE(m.valid_until,''),m.state,m.embedding_state,m.metadata_json,m.provenance_json,m.created_at,m.updated_at FROM memory_fts f JOIN memory_current c ON c.workspace_id=f.workspace_id AND c.id=f.id JOIN memories m ON m.workspace_id=c.workspace_id AND m.id=c.id AND m.version=c.version WHERE f.workspace_id=? AND memory_fts MATCH ? AND m.state NOT IN ('archived','tombstoned') ORDER BY bm25(memory_fts),m.updated_at DESC LIMIT ?`, w, match, limit)
+		rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.workspace_id,m.scope_id,m.version,m.type,COALESCE(m.subject,''),COALESCE(m.predicate,''),COALESCE(m.object,''),m.title,m.content,m.importance,m.confidence,m.confidence_source,COALESCE(m.valid_from,''),COALESCE(m.valid_until,''),m.state,m.embedding_state,m.metadata_json,m.provenance_json,m.created_at,m.updated_at FROM memory_fts f JOIN memory_current c ON c.workspace_id=f.workspace_id AND c.id=f.id JOIN memories m ON m.workspace_id=c.workspace_id AND m.id=c.id AND m.version=c.version WHERE f.workspace_id=? AND memory_fts MATCH ? AND m.state NOT IN ('archived','tombstoned') ORDER BY bm25(memory_fts),m.updated_at DESC LIMIT ?`, w, strings.Join(parts, " OR "), limit)
 		if err == nil {
 			defer rows.Close()
 			var out []Memory
 			for rows.Next() {
-				v, e := scanMemory(rows)
-				if e != nil {
-					return nil, e
+				memory, scanErr := scanMemory(rows)
+				if scanErr != nil {
+					return nil, scanErr
 				}
-				if includes(scopes, v.ScopeID) {
-					out = append(out, v)
+				if includes(scopes, memory.ScopeID) {
+					out = append(out, memory)
 				}
 			}
 			return out, rows.Err()
@@ -622,13 +627,97 @@ func (s *SQLStore) SearchMemories(ctx context.Context, w string, scopes []string
 	defer rows.Close()
 	var out []Memory
 	for rows.Next() {
+		memory, scanErr := scanMemory(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		if includes(scopes, memory.ScopeID) {
+			out = append(out, memory)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLStore) SearchMemoryCandidates(ctx context.Context, w string, scopes []string, query string, limit int) ([]Memory, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	term := strings.TrimSpace(query)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if s.dialect == "sqlite" && term != "" {
+		// Quote user terms so FTS operators are never interpreted from prompts.
+		parts := strings.Fields(term)
+		for i := range parts {
+			parts[i] = `"` + strings.ReplaceAll(parts[i], `"`, `""`) + `"*`
+		}
+		match := strings.Join(parts, " OR ")
+		scopeClause, scopeArgs := sqlScopeClause(scopes)
+		args := []any{w, match, now, now}
+		args = append(args, scopeArgs...)
+		args = append(args, limit)
+		rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.workspace_id,m.scope_id,m.version,m.type,COALESCE(m.subject,''),COALESCE(m.predicate,''),COALESCE(m.object,''),m.title,m.content,m.importance,m.confidence,m.confidence_source,COALESCE(m.valid_from,''),COALESCE(m.valid_until,''),m.state,m.embedding_state,m.metadata_json,m.provenance_json,m.created_at,m.updated_at FROM memory_fts f JOIN memory_current c ON c.workspace_id=f.workspace_id AND c.id=f.id JOIN memories m ON m.workspace_id=c.workspace_id AND m.id=c.id AND m.version=c.version WHERE f.workspace_id=? AND memory_fts MATCH ? AND m.state='active' AND (m.valid_from IS NULL OR m.valid_from='' OR m.valid_from<=?) AND (m.valid_until IS NULL OR m.valid_until='' OR m.valid_until>=?)`+scopeClause+` ORDER BY bm25(memory_fts,0,0,10,2),m.importance DESC,m.updated_at DESC,m.id LIMIT ?`, args...)
+		if err == nil {
+			defer rows.Close()
+			var out []Memory
+			for rows.Next() {
+				v, e := scanMemory(rows)
+				if e != nil {
+					return nil, e
+				}
+				out = append(out, v)
+			}
+			return out, rows.Err()
+		}
+	}
+	if s.dialect == "sqlite" {
+		like := "%" + term + "%"
+		scopeClause, scopeArgs := sqlScopeClause(scopes)
+		args := []any{w, now, now, term, like}
+		args = append(args, scopeArgs...)
+		args = append(args, limit)
+		rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.workspace_id,m.scope_id,m.version,m.type,COALESCE(m.subject,''),COALESCE(m.predicate,''),COALESCE(m.object,''),m.title,m.content,m.importance,m.confidence,m.confidence_source,COALESCE(m.valid_from,''),COALESCE(m.valid_until,''),m.state,m.embedding_state,m.metadata_json,m.provenance_json,m.created_at,m.updated_at FROM memories m JOIN memory_current c ON c.workspace_id=m.workspace_id AND c.id=m.id AND c.version=m.version WHERE m.workspace_id=? AND m.state='active' AND (m.valid_from IS NULL OR m.valid_from='' OR m.valid_from<=?) AND (m.valid_until IS NULL OR m.valid_until='' OR m.valid_until>=?) AND (?='' OR LOWER(m.title || ' ' || COALESCE(m.subject,'') || ' ' || COALESCE(m.predicate,'') || ' ' || COALESCE(m.object,'') || ' ' || m.content) LIKE LOWER(?))`+scopeClause+` ORDER BY m.importance DESC,m.updated_at DESC,m.id LIMIT ?`, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []Memory
+		for rows.Next() {
+			memory, scanErr := scanMemory(rows)
+			if scanErr != nil {
+				return nil, scanErr
+			}
+			out = append(out, memory)
+		}
+		return out, rows.Err()
+	}
+	searchVector := `(setweight(to_tsvector('simple', COALESCE(m.title,'')), 'A') || setweight(to_tsvector('simple', COALESCE(m.subject,'') || ' ' || COALESCE(m.predicate,'') || ' ' || COALESCE(m.object,'')), 'B') || setweight(to_tsvector('simple', COALESCE(m.content,'')), 'C'))`
+	scopeClause, scopeArgs := sqlScopeClause(scopes)
+	args := []any{w, now, now}
+	where := ""
+	order := "m.importance DESC,m.updated_at DESC,m.id"
+	var orderArgs []any
+	if tsquery := postgresTSQuery(term); tsquery != "" {
+		where = " AND " + searchVector + " @@ to_tsquery('simple', ?)"
+		args = append(args, tsquery)
+		order = "ts_rank_cd(" + searchVector + ", to_tsquery('simple', ?)) DESC," + order
+		orderArgs = append(orderArgs, tsquery)
+	}
+	args = append(args, scopeArgs...)
+	args = append(args, orderArgs...)
+	args = append(args, limit)
+	statement := `SELECT m.id,m.workspace_id,m.scope_id,m.version,m.type,COALESCE(m.subject,''),COALESCE(m.predicate,''),COALESCE(m.object,''),m.title,m.content,m.importance,m.confidence,m.confidence_source,COALESCE(m.valid_from,''),COALESCE(m.valid_until,''),m.state,m.embedding_state,m.metadata_json,m.provenance_json,m.created_at,m.updated_at FROM memories m JOIN memory_current c ON c.workspace_id=m.workspace_id AND c.id=m.id AND c.version=m.version WHERE m.workspace_id=? AND m.state='active' AND (m.valid_from IS NULL OR m.valid_from='' OR m.valid_from<=?) AND (m.valid_until IS NULL OR m.valid_until='' OR m.valid_until>=?)` + where + scopeClause + ` ORDER BY ` + order + ` LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, s.q(statement), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Memory
+	for rows.Next() {
 		v, e := scanMemory(rows)
 		if e != nil {
 			return nil, e
 		}
-		if includes(scopes, v.ScopeID) {
-			out = append(out, v)
-		}
+		out = append(out, v)
 	}
 	return out, rows.Err()
 }
@@ -709,11 +798,17 @@ func (s *SQLStore) SetEmbeddingState(ctx context.Context, w, id string, version 
 	return err
 }
 func (s *SQLStore) SearchEmbeddings(ctx context.Context, w string, scopes []string, query []float32, limit int) (map[string]float64, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if s.dialect == "postgres" {
 		if limit <= 0 {
 			limit = 200
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT e.object_id,1-(e.embedding <=> $1::vector) FROM embeddings e JOIN memories m ON m.workspace_id=e.workspace_id AND m.id=e.object_id AND m.version=e.version WHERE e.workspace_id=$2 AND e.object_type='memory' AND e.embedding IS NOT NULL AND m.embedding_state='ready' ORDER BY e.embedding <=> $1::vector LIMIT $3`, vectorText(query), w, limit)
+		scopeClause, scopeArgs := sqlScopeClause(scopes)
+		args := []any{vectorText(query), w, now, now}
+		args = append(args, scopeArgs...)
+		args = append(args, vectorText(query), limit)
+		statement := `SELECT e.object_id,1-(e.embedding <=> ?::vector) FROM embeddings e JOIN memory_current c ON c.workspace_id=e.workspace_id AND c.id=e.object_id AND c.version=e.version JOIN memories m ON m.workspace_id=e.workspace_id AND m.id=e.object_id AND m.version=e.version WHERE e.workspace_id=? AND e.object_type='memory' AND e.embedding IS NOT NULL AND m.embedding_state='ready' AND m.state='active' AND (m.valid_from IS NULL OR m.valid_from='' OR m.valid_from<=?) AND (m.valid_until IS NULL OR m.valid_until='' OR m.valid_until>=?)` + scopeClause + ` ORDER BY e.embedding <=> ?::vector LIMIT ?`
+		rows, err := s.db.QueryContext(ctx, s.q(statement), args...)
 		if err != nil {
 			return nil, err
 		}
@@ -729,7 +824,10 @@ func (s *SQLStore) SearchEmbeddings(ctx context.Context, w string, scopes []stri
 		}
 		return out, rows.Err()
 	}
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT e.object_id,e.vector_json FROM embeddings e JOIN memories m ON m.workspace_id=e.workspace_id AND m.id=e.object_id AND m.version=e.version WHERE e.workspace_id=? AND e.object_type='memory' AND m.embedding_state='ready'`), w)
+	scopeClause, scopeArgs := sqlScopeClause(scopes)
+	args := []any{w, now, now}
+	args = append(args, scopeArgs...)
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT e.object_id,e.vector_json FROM embeddings e JOIN memory_current c ON c.workspace_id=e.workspace_id AND c.id=e.object_id AND c.version=e.version JOIN memories m ON m.workspace_id=e.workspace_id AND m.id=e.object_id AND m.version=e.version WHERE e.workspace_id=? AND e.object_type='memory' AND m.embedding_state='ready' AND m.state='active' AND (m.valid_from IS NULL OR m.valid_from='' OR m.valid_from<=?) AND (m.valid_until IS NULL OR m.valid_until='' OR m.valid_until>=?)`+scopeClause), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -839,7 +937,7 @@ func (s *SQLStore) RebuildProjections(ctx context.Context, w string) error {
 	}
 	if s.dialect == "sqlite" {
 		_, _ = s.db.ExecContext(ctx, `DELETE FROM memory_fts WHERE workspace_id=?`, w)
-		_, _ = s.db.ExecContext(ctx, `INSERT INTO memory_fts(workspace_id,id,title,content) SELECT m.workspace_id,m.id,m.title,m.content FROM memories m JOIN memory_current c ON c.workspace_id=m.workspace_id AND c.id=m.id AND c.version=m.version WHERE m.workspace_id=?`, w)
+		_, _ = s.db.ExecContext(ctx, `INSERT INTO memory_fts(workspace_id,id,title,content) SELECT m.workspace_id,m.id,COALESCE(m.subject,'') || ' ' || COALESCE(m.predicate,'') || ' ' || COALESCE(m.object,'') || ' ' || m.title,m.content FROM memories m JOIN memory_current c ON c.workspace_id=m.workspace_id AND c.id=m.id AND c.version=m.version WHERE m.workspace_id=?`, w)
 		_, _ = s.db.ExecContext(ctx, `DELETE FROM entity_fts WHERE workspace_id=?`, w)
 		_, _ = s.db.ExecContext(ctx, `INSERT INTO entity_fts(workspace_id,id,display_name,aliases) SELECT e.workspace_id,e.id,e.display_name,e.aliases_json FROM entities e JOIN entity_current c ON c.workspace_id=e.workspace_id AND c.id=e.id AND c.version=e.version WHERE e.workspace_id=?`, w)
 	}
@@ -1008,6 +1106,35 @@ func sqrt(v float64) float64 {
 		z = (z + v/z) / 2
 	}
 	return z
+}
+
+func sqlScopeClause(scopes []string) (string, []any) {
+	if len(scopes) == 0 {
+		return "", nil
+	}
+	marks := make([]string, len(scopes))
+	args := make([]any, len(scopes))
+	for index, scope := range scopes {
+		marks[index] = "?"
+		args[index] = scope
+	}
+	return " AND m.scope_id IN (" + strings.Join(marks, ",") + ")", args
+}
+
+func postgresTSQuery(query string) string {
+	parts := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	terms := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, part := range parts {
+		if part == "" || seen[part] {
+			continue
+		}
+		seen[part] = true
+		terms = append(terms, part+":*")
+	}
+	return strings.Join(terms, " | ")
 }
 func snapshotChecksum(s Snapshot) string {
 	s.Checksum = ""

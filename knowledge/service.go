@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,14 +15,29 @@ type Embedder interface {
 	Provider() string
 	Model() string
 }
+type Reranker interface {
+	Rerank(context.Context, string, []Memory) (RerankResult, error)
+	Model() string
+}
+type RerankResult struct {
+	IDs          []string
+	InputTokens  int
+	OutputTokens int
+}
 type Service struct {
 	Store    Store
 	Embedder Embedder
+	Reranker Reranker
 	once     sync.Once
 }
 
 func NewService(store Store, embedder Embedder) *Service {
 	return &Service{Store: store, Embedder: embedder}
+}
+
+func (s *Service) WithReranker(reranker Reranker) *Service {
+	s.Reranker = reranker
+	return s
 }
 func (s *Service) StartEmbeddingWorker(ctx context.Context) {
 	if s.Embedder == nil {
@@ -406,10 +420,6 @@ func (s *Service) Context(ctx context.Context, r ContextRequest) (ContextRespons
 	if err != nil {
 		return ContextResponse{}, err
 	}
-	mems, err := s.Store.SearchMemories(ctx, r.WorkspaceID, r.ScopeIDs, r.Query, 200)
-	if err != nil {
-		return ContextResponse{}, err
-	}
 	entities, err := s.Store.ResolveEntities(ctx, r.WorkspaceID, r.ScopeIDs, r.Query)
 	if err != nil {
 		return ContextResponse{}, err
@@ -426,69 +436,37 @@ func (s *Service) Context(ctx context.Context, r ContextRequest) (ContextRespons
 			}
 		}
 	}
-	if len(entitySet) > 0 {
-		sort.SliceStable(arts, func(i, j int) bool {
-			return s.relatedToAny(ctx, r.WorkspaceID, arts[i].ID, entitySet) && !s.relatedToAny(ctx, r.WorkspaceID, arts[j].ID, entitySet)
-		})
+	retrieval, err := s.RetrieveMemories(ctx, MemoryRetrievalRequest{WorkspaceID: r.WorkspaceID, Query: r.Query, ScopeIDs: r.ScopeIDs, EntityIDs: r.EntityIDs, Limit: 100, Rerank: "auto"})
+	if err != nil {
+		return ContextResponse{}, err
 	}
-	semantic := map[string]float64{}
-	mode := "lexical"
-	model := ""
-	if s.Embedder != nil {
-		if qv, e := s.Embedder.Embed(ctx, r.Query); e == nil {
-			semantic, _ = s.Store.SearchEmbeddings(ctx, r.WorkspaceID, r.ScopeIDs, qv, 200)
-			seen := map[string]bool{}
-			for _, m := range mems {
-				seen[m.ID] = true
-			}
-			for id := range semantic {
-				if seen[id] {
-					continue
-				}
-				if m, getErr := s.Store.GetMemory(ctx, r.WorkspaceID, id, 0); getErr == nil && includes(r.ScopeIDs, m.ScopeID) && m.State != "archived" && m.State != "tombstoned" {
-					mems = append(mems, m)
-				}
-			}
-			mode = "semantic_hybrid"
-			model = s.Embedder.Model()
-		}
-	}
-	now := time.Now()
-	ranked := make([]RankedMemory, 0, len(mems))
-	for _, m := range mems {
-		if m.ValidFrom != nil && m.ValidFrom.After(now) || m.ValidUntil != nil && m.ValidUntil.Before(now) {
-			continue
-		}
-		lex := lexicalScore(r.Query, m.Title+" "+m.Content)
-		scope := scopeScore(r.ScopeIDs, m.ScopeID)
-		recency := recencyScore(m.UpdatedAt)
-		sem := semantic[m.ID]
-		entity := 0.0
-		if s.relatedToAny(ctx, r.WorkspaceID, m.ID, entitySet) {
-			entity = 1
-		}
-		score := .3*lex + .18*scope + .14*m.Importance + .14*m.Confidence + .09*recency + .05*sem + .1*entity
-		ranked = append(ranked, RankedMemory{m, score, map[string]float64{"lexical": lex, "scope": scope, "entity": entity, "importance": m.Importance, "confidence": m.Confidence, "recency": recency, "semantic": sem}})
-	}
-	sort.Slice(ranked, func(i, j int) bool { return ranked[i].Score > ranked[j].Score })
-	backlog, _ := s.Store.EmbeddingBacklog(ctx, r.WorkspaceID)
-	resp := ContextResponse{Schema: APIVersion, Ranking: rankingMechanism(), RetrievalMode: mode, Artifacts: []Artifact{}, ArtifactExplanations: []ArtifactExplanation{}, Instructions: []RankedMemory{}, Entities: entities, Decisions: []RankedMemory{}, Facts: []RankedMemory{}, Episodes: []RankedMemory{}, IndexFresh: backlog == 0, EmbeddingModel: model}
+	resp := ContextResponse{Schema: APIVersion, Ranking: retrieval.Ranking, RetrievalMode: retrieval.RetrievalMode, Artifacts: []Artifact{}, ArtifactExplanations: []ArtifactExplanation{}, Instructions: []RankedMemory{}, Entities: entities, Decisions: []RankedMemory{}, Facts: []RankedMemory{}, Episodes: []RankedMemory{}, IndexFresh: retrieval.IndexFresh, EmbeddingModel: retrieval.EmbeddingModel}
 	used := 0
 	instructionKeys := map[string]bool{}
+	artifactLimit := r.TokenBudget / 2
+	episodeLimit := r.TokenBudget / 5
+	artifactUsed, episodeUsed := 0, 0
 	for _, a := range arts {
+		if !explicitArtifact(a, r.ArtifactSelectors) {
+			continue
+		}
 		cost := tokens(a.Title + a.Content)
 		if used+cost > r.TokenBudget {
-			resp.Omissions = append(resp.Omissions, "artifact:"+a.ID)
+			resp.Omissions = append(resp.Omissions, "artifact:token_budget:"+a.ID)
 			continue
 		}
 		resp.Artifacts = append(resp.Artifacts, a)
 		resp.ArtifactExplanations = append(resp.ArtifactExplanations, ArtifactExplanation{ArtifactID: a.ID, Reasons: artifactReasons(a, r, entitySet, s.relatedToAny(ctx, r.WorkspaceID, a.ID, entitySet))})
 		used += cost
+		artifactUsed += cost
 	}
-	for _, m := range ranked {
+	for _, m := range retrieval.Results {
+		if m.Memory.Type == "episode" {
+			continue
+		}
 		cost := tokens(m.Memory.Title + m.Memory.Content)
 		if used+cost > r.TokenBudget {
-			resp.Omissions = append(resp.Omissions, "memory:"+m.Memory.ID)
+			resp.Omissions = append(resp.Omissions, "memory:token_budget:"+m.Memory.ID)
 			continue
 		}
 		switch m.Memory.Type {
@@ -505,10 +483,48 @@ func (s *Service) Context(ctx context.Context, r ContextRequest) (ContextRespons
 			resp.Decisions = append(resp.Decisions, m)
 		case "fact":
 			resp.Facts = append(resp.Facts, m)
-		case "episode":
-			resp.Episodes = append(resp.Episodes, m)
 		}
 		used += cost
+	}
+	for _, a := range arts {
+		if explicitArtifact(a, r.ArtifactSelectors) {
+			continue
+		}
+		related := s.relatedToAny(ctx, r.WorkspaceID, a.ID, entitySet)
+		if !artifactRelevant(a, r.Query, related) {
+			resp.Omissions = append(resp.Omissions, "artifact:irrelevant:"+a.ID)
+			continue
+		}
+		cost := tokens(a.Title + a.Content)
+		if artifactUsed+cost > artifactLimit {
+			resp.Omissions = append(resp.Omissions, "artifact:type_budget:"+a.ID)
+			continue
+		}
+		if used+cost > r.TokenBudget {
+			resp.Omissions = append(resp.Omissions, "artifact:token_budget:"+a.ID)
+			continue
+		}
+		resp.Artifacts = append(resp.Artifacts, a)
+		resp.ArtifactExplanations = append(resp.ArtifactExplanations, ArtifactExplanation{ArtifactID: a.ID, Reasons: artifactReasons(a, r, entitySet, related)})
+		used += cost
+		artifactUsed += cost
+	}
+	for _, m := range retrieval.Results {
+		if m.Memory.Type != "episode" {
+			continue
+		}
+		cost := tokens(m.Memory.Title + m.Memory.Content)
+		if episodeUsed+cost > episodeLimit {
+			resp.Omissions = append(resp.Omissions, "memory:type_budget:"+m.Memory.ID)
+			continue
+		}
+		if used+cost > r.TokenBudget {
+			resp.Omissions = append(resp.Omissions, "memory:token_budget:"+m.Memory.ID)
+			continue
+		}
+		resp.Episodes = append(resp.Episodes, m)
+		used += cost
+		episodeUsed += cost
 	}
 	resp.TokenEstimate = used
 	return resp, nil
@@ -646,12 +662,25 @@ func validArtifactStatus(v string) bool {
 }
 func rankingMechanism() RankingMechanism {
 	return RankingMechanism{
-		Version:             "v1",
-		MemoryWeights:       map[string]float64{"lexical": .30, "scope": .18, "importance": .14, "confidence": .14, "entity": .10, "recency": .09, "semantic": .05},
-		ArtifactPolicy:      []string{"explicit identity and version", "active lifecycle and type selectors", "applicable scope", "entity relationship", "stable storage order"},
-		ContextOrder:        []string{"active_artifacts", "instructions", "entities", "decisions", "facts", "episodes"},
+		Version:             "v2",
+		MemoryWeights:       map[string]float64{"lexical_rrf": .36, "semantic_rrf": .29, "entity": .15, "scope": .10, "importance": .05, "confidence": .05, "episode_recency": .05},
+		ArtifactPolicy:      []string{"explicit identity and version", "active lifecycle and type selectors", "query or entity relevance", "50 percent unselected artifact budget", "stable storage order"},
+		ContextOrder:        []string{"explicit_artifacts", "instructions", "decisions", "facts", "relevant_artifacts", "episodes"},
 		InstructionOverride: "A more-specific applicable instruction replaces a broader instruction only when both declare the same metadata.semantic_key.",
 	}
+}
+
+func explicitArtifact(artifact Artifact, selectors []ArtifactSelector) bool {
+	for _, selector := range selectors {
+		if selector.ID != "" && selector.ID == artifact.ID || selector.Version > 0 && selector.Version == artifact.Version {
+			return true
+		}
+	}
+	return false
+}
+
+func artifactRelevant(artifact Artifact, query string, related bool) bool {
+	return related || lexicalScore(query, artifact.Title+" "+artifact.Content) > 0
 }
 func artifactReasons(a Artifact, r ContextRequest, entities map[string]bool, related bool) []string {
 	reasons := []string{"deterministic_artifact_selection"}

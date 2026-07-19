@@ -48,6 +48,9 @@ func main() {
 		log.Fatal("KNOWLEDGE_WORKSPACE_ID is required in hosted mode")
 	}
 	svc := knowledge.NewService(store, embedder)
+	if key := os.Getenv("RERANK_API_KEY"); key != "" && strings.EqualFold(defaultValue(os.Getenv("RERANK_ENABLED"), "false"), "true") {
+		svc.WithReranker(&knowledge.HTTPReranker{APIKey: key, BaseURL: os.Getenv("RERANK_BASE_URL"), ModelName: defaultValue(os.Getenv("RERANK_MODEL"), "gpt-5.6-luna")})
+	}
 	svc.StartEmbeddingWorker(ctx)
 	srv := &http.Server{Addr: ":" + defaultValue(os.Getenv("PORT"), "8080"), Handler: (&server.Server{Service: svc, Token: os.Getenv("KNOWLEDGE_API_TOKEN"), ExportToken: os.Getenv("KNOWLEDGE_EXPORT_TOKEN"), DefaultWorkspace: os.Getenv("KNOWLEDGE_WORKSPACE_ID")}).Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

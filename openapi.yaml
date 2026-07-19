@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Vessica Knowledge API
-  version: 1.2.0
+  version: 1.3.0
   description: |
     Workspace-scoped API for authoritative artifacts, durable memories, entities,
     relationships, ranked context, workflow episodes, and verified snapshots.
@@ -25,13 +25,21 @@ tags:
   - {name: Migration, description: Export and import verified workspace snapshots}
 paths:
   /healthz:
-  /admin/v1/embeddings/backfill/{job_id}:
     get:
       security: []
       summary: Check process health
       operationId: health
       responses:
         '200': {description: Process health, content: {application/json: {schema: {type: object}}}}
+  /admin/v1/embeddings/backfill/{job_id}:
+    get:
+      tags: [Context]
+      summary: Read one embedding backfill job
+      operationId: getEmbeddingBackfillJob
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Backfill job status, content: {application/json: {schema: {$ref: '#/components/schemas/EmbeddingBackfillEnvelope'}}}}
   /readyz:
     get:
       security: []
@@ -46,7 +54,6 @@ paths:
       summary: Read retrieval and index status
       operationId: getKnowledgeStatus
       parameters:
-        - {name: job_id, in: path, required: true, schema: {type: string}}
         - {$ref: '#/components/parameters/WorkspaceID'}
       responses:
         '200': {description: Retrieval and embedding status, content: {application/json: {schema: {$ref: '#/components/schemas/StatusEnvelope'}}}}
@@ -237,6 +244,21 @@ paths:
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Memory'}}}}
       responses:
         '201': {description: Memory, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryEnvelope'}}}}
+  /v1/memories:retrieve:
+    post:
+      tags: [Memories]
+      summary: Retrieve authorized current memories with deterministic hybrid ranking
+      operationId: retrieveMemories
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MemoryRetrievalRequest'}
+      responses:
+        '200': {description: Ranked retrieval-v2 memories and diagnostics, content: {application/json: {schema: {$ref: '#/components/schemas/MemoryRetrievalEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Invalid'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /v1/memories/{id}:
     get:
       tags: [Memories]
@@ -521,6 +543,39 @@ components:
         memory: {$ref: '#/components/schemas/Memory'}
         score: {type: number}
         explanation: {type: object, additionalProperties: {type: number}}
+    MemoryRetrievalRequest:
+      type: object
+      required: [query, scopes]
+      properties:
+        workspace_id: {type: string}
+        query: {type: string}
+        scopes: {type: array, items: {type: string}}
+        entity_ids: {type: array, items: {type: string}}
+        limit: {type: integer, minimum: 1, maximum: 100, default: 20}
+        rerank: {type: string, enum: [auto, never, always], default: auto}
+    RerankMetadata:
+      type: object
+      required: [applied, reason, candidate_count]
+      properties:
+        applied: {type: boolean}
+        model: {type: string}
+        reason: {type: string}
+        candidate_count: {type: integer}
+        latency_ms: {type: integer}
+        input_tokens: {type: integer}
+        output_tokens: {type: integer}
+    MemoryRetrievalResponse:
+      type: object
+      required: [schema, results, ranking, retrieval_mode, index_fresh, rerank]
+      properties:
+        schema: {type: string, const: vessica.knowledge/v1}
+        results: {type: array, items: {$ref: '#/components/schemas/RankedMemory'}}
+        ranking: {$ref: '#/components/schemas/RankingMechanism'}
+        retrieval_mode: {type: string, enum: [lexical, semantic_hybrid]}
+        embedding_model: {type: string}
+        index_fresh: {type: boolean}
+        ambiguity: {type: string, enum: [ambiguous_subject]}
+        rerank: {$ref: '#/components/schemas/RerankMetadata'}
     RankingMechanism:
       type: object
       required: [version, memory_weights, artifact_policy, context_order, instruction_override]
@@ -619,6 +674,7 @@ components:
     ArtifactListEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Artifact'}}}}]}
     MemoryEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/Memory'}}}]}
     MemoryListEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Memory'}}}}]}
+    MemoryRetrievalEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/MemoryRetrievalResponse'}}}]}
     RelationshipEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/Relationship'}}}]}
     ContextEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/ContextResponse'}}}]}
     SnapshotEnvelope: {allOf: [{$ref: '#/components/schemas/EnvelopeBase'}, {type: object, properties: {data: {$ref: '#/components/schemas/Snapshot'}}}]}

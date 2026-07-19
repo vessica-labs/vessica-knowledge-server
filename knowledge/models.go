@@ -27,6 +27,8 @@ type Status struct {
 	EmbeddingModel   string `json:"embedding_model,omitempty"`
 	EmbeddingBacklog int    `json:"embedding_backlog"`
 	IndexFresh       bool   `json:"index_fresh"`
+	RerankEnabled    bool   `json:"rerank_enabled"`
+	RerankModel      string `json:"rerank_model,omitempty"`
 }
 
 type EmbeddingBackfill struct {
@@ -166,6 +168,33 @@ type RankedMemory struct {
 	Memory      Memory             `json:"memory"`
 	Score       float64            `json:"score"`
 	Explanation map[string]float64 `json:"explanation"`
+}
+type MemoryRetrievalRequest struct {
+	WorkspaceID string   `json:"workspace_id"`
+	Query       string   `json:"query"`
+	ScopeIDs    []string `json:"scopes"`
+	EntityIDs   []string `json:"entity_ids,omitempty"`
+	Limit       int      `json:"limit,omitempty"`
+	Rerank      string   `json:"rerank,omitempty"`
+}
+type RerankMetadata struct {
+	Applied        bool   `json:"applied"`
+	Model          string `json:"model,omitempty"`
+	Reason         string `json:"reason"`
+	CandidateCount int    `json:"candidate_count"`
+	LatencyMS      int64  `json:"latency_ms,omitempty"`
+	InputTokens    int    `json:"input_tokens,omitempty"`
+	OutputTokens   int    `json:"output_tokens,omitempty"`
+}
+type MemoryRetrievalResponse struct {
+	Schema         string           `json:"schema"`
+	Results        []RankedMemory   `json:"results"`
+	Ranking        RankingMechanism `json:"ranking"`
+	RetrievalMode  string           `json:"retrieval_mode"`
+	EmbeddingModel string           `json:"embedding_model,omitempty"`
+	IndexFresh     bool             `json:"index_fresh"`
+	Ambiguity      string           `json:"ambiguity,omitempty"`
+	Rerank         RerankMetadata   `json:"rerank"`
 }
 type RankingMechanism struct {
 	Version             string             `json:"version"`

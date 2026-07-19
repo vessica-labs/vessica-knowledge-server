@@ -99,6 +99,13 @@ func TestAPIAuthIdempotencyAndContext(t *testing.T) {
 	if got := send("POST", "/v1/memories/"+memoryEnv.Data.ID+":version", "memory-v2", `{"content":"The dashboard is securely embedded"}`, true); got.Code != 200 {
 		t.Fatalf("memory version=%d %s", got.Code, got.Body.String())
 	}
+	retrieve := send("POST", "/v1/memories:retrieve", "", `{"query":"secure dashboard","scopes":["`+env.Data.ID+`"],"limit":5,"rerank":"never"}`, true)
+	if retrieve.Code != 200 || !bytes.Contains(retrieve.Body.Bytes(), []byte(`"version":"v2"`)) || !bytes.Contains(retrieve.Body.Bytes(), []byte(memoryEnv.Data.ID)) {
+		t.Fatalf("memory retrieve=%d %s", retrieve.Code, retrieve.Body.String())
+	}
+	if got := send("POST", "/v1/memories:retrieve", "", `{"workspace_id":"another","query":"dashboard"}`, true); got.Code != 403 {
+		t.Fatalf("retrieve workspace escape=%d %s", got.Code, got.Body.String())
+	}
 	rel := send("POST", "/v1/relationships", "relationship", `{"scope_id":"`+env.Data.ID+`","from_type":"entity","from_id":"`+entityEnv.Data.ID+`","predicate":"documented_by","to_type":"artifact","to_id":"`+artifactEnv.Data.ID+`","confidence":1}`, true)
 	if rel.Code != 201 {
 		t.Fatalf("relationship=%d %s", rel.Code, rel.Body.String())

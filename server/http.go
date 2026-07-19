@@ -45,6 +45,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /admin/v1/embeddings/backfill/{job_id}", s.authWith(s.exportCredential(), s.embeddingBackfillStatus))
 	m.HandleFunc("GET /v1/search", s.auth(s.search))
 	m.HandleFunc("POST /v1/context", s.auth(s.context))
+	m.HandleFunc("POST /v1/memories:retrieve", s.auth(s.retrieveMemories))
 	m.HandleFunc("POST /v1/scopes", s.auth(s.createScope))
 	m.HandleFunc("GET /v1/scopes/{id}", s.auth(s.getScope))
 	m.HandleFunc("POST /v1/entities", s.auth(s.createEntity))
@@ -143,6 +144,10 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		result.RetrievalMode = "semantic_hybrid"
 		result.EmbeddingState = "configured"
 		result.EmbeddingModel = s.Service.Embedder.Model()
+	}
+	if s.Service.Reranker != nil {
+		result.RerankEnabled = true
+		result.RerankModel = s.Service.Reranker.Model()
 	}
 	respond(w, result, nil, http.StatusOK)
 }
@@ -342,6 +347,26 @@ func (s *Server) context(w http.ResponseWriter, r *http.Request) {
 	}
 	got, err := s.Service.Context(r.Context(), v)
 	respond(w, got, err, 200)
+}
+
+func (s *Server) retrieveMemories(w http.ResponseWriter, r *http.Request) {
+	var request knowledge.MemoryRetrievalRequest
+	if !decode(w, r, &request) {
+		return
+	}
+	if request.WorkspaceID == "" {
+		request.WorkspaceID = s.DefaultWorkspace
+	}
+	if s.DefaultWorkspace != "" && request.WorkspaceID != s.DefaultWorkspace {
+		failure(w, &knowledge.Error{Code: "forbidden_workspace", Message: "token is not scoped to this workspace", Status: 403})
+		return
+	}
+	if strings.TrimSpace(request.Query) == "" || len(request.ScopeIDs) == 0 {
+		respond(w, nil, knowledge.Invalid("query and at least one scope are required"), http.StatusBadRequest)
+		return
+	}
+	result, err := s.Service.RetrieveMemories(r.Context(), request)
+	respond(w, result, err, http.StatusOK)
 }
 func (s *Server) createScope(w http.ResponseWriter, r *http.Request) {
 	var v knowledge.Scope

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -46,7 +47,7 @@ func (e *HTTPEmbedder) Embed(ctx context.Context, text string) ([]float32, error
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("embedding provider failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return nil, fmt.Errorf("embedding provider failed (%d)", resp.StatusCode)
 	}
 	var out struct {
 		Data []struct {
@@ -58,6 +59,14 @@ func (e *HTTPEmbedder) Embed(ctx context.Context, text string) ([]float32, error
 	}
 	if len(out.Data) == 0 {
 		return nil, fmt.Errorf("embedding provider returned no data")
+	}
+	if len(out.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("embedding provider returned an empty vector")
+	}
+	for _, value := range out.Data[0].Embedding {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			return nil, fmt.Errorf("embedding provider returned a malformed vector")
+		}
 	}
 	return out.Data[0].Embedding, nil
 }

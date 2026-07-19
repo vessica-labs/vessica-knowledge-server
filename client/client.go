@@ -71,6 +71,11 @@ func (c *Client) Context(ctx context.Context, v knowledge.ContextRequest) (knowl
 	e := c.do(ctx, "POST", "/v1/context", "", v, &out)
 	return out, e
 }
+func (c *Client) RetrieveMemories(ctx context.Context, v knowledge.MemoryRetrievalRequest) (knowledge.MemoryRetrievalResponse, error) {
+	var out knowledge.MemoryRetrievalResponse
+	e := c.do(ctx, "POST", "/v1/memories:retrieve", "", v, &out)
+	return out, e
+}
 func (c *Client) CreateScope(ctx context.Context, key string, v knowledge.Scope) (knowledge.Scope, error) {
 	var out knowledge.Scope
 	e := c.do(ctx, "POST", "/v1/scopes", key, v, &out)

@@ -20,6 +20,7 @@ type Store interface {
 	GetMemory(context.Context, string, string, int) (Memory, error)
 	ListMemoryVersions(context.Context, string, string) ([]Memory, error)
 	SearchMemories(context.Context, string, []string, string, int) ([]Memory, error)
+	SearchMemoryCandidates(context.Context, string, []string, string, int) ([]Memory, error)
 	PutRelationship(context.Context, Relationship, Event) (Relationship, error)
 	GetRelationship(context.Context, string, string) (Relationship, error)
 	ListRelationships(context.Context, string, string) ([]Relationship, error)
